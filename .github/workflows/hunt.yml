@@ -2,7 +2,7 @@ name: Daangn Phone Hunter
 
 on:
   schedule:
-    - cron: "*/5 * * * *" # chạy mỗi 5 phút, scan_once tự quyết định có quét theo config
+    - cron: "* * * * *" # gọi mỗi phút, scan_once tự chặn theo scan_interval_minutes
   workflow_dispatch: {} # bấm chạy thủ công
   repository_dispatch:
     types: [scan] # nút "Quét ngay" trên bot (Cloudflare Worker) kích hoạt
@@ -28,6 +28,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Debug trigger
+        run: |
+          echo "event=${{ github.event_name }}"
+          echo "ref=${{ github.ref }}"
+          echo "sha=${{ github.sha }}"
 
       - name: Install dependencies
         run: |

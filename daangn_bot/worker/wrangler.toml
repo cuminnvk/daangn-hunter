@@ -3,6 +3,9 @@ name = "daangn-bot"
 main = "worker.js"
 compatibility_date = "2024-11-01"
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 # KV lưu cài đặt, người nhận, trạng thái.
 # Tạo bằng:  npx wrangler kv namespace create BOT_KV
 # rồi dán id nhận được vào dòng dưới.

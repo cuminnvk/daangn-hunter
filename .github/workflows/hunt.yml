@@ -2,7 +2,7 @@ name: Daangn Phone Hunter
 
 on:
   schedule:
-    - cron: "* * * * *" # gọi mỗi phút, scan_once tự chặn theo scan_interval_minutes
+    - cron: "*/5 * * * *" # gọi mỗi 5 phút, scan_once tự chặn theo scan_interval_minutes
   workflow_dispatch: {} # bấm chạy thủ công
   repository_dispatch:
     types: [scan] # nút "Quét ngay" trên bot (Cloudflare Worker) kích hoạt
@@ -47,7 +47,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
           WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
-          FORCE_SCAN: ${{ github.event_name != 'schedule' && '1' || '0' }}
+          FORCE_SCAN: ${{ (github.event_name == 'workflow_dispatch' || github.event.client_payload.manual == true) && '1' || '0' }}
         run: python scan_once.py
 
       - name: Báo Worker đã quét xong (tùy chọn)

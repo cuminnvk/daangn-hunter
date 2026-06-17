@@ -143,11 +143,6 @@ def main() -> int:
     kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
     processed: set[str] = set()
     digests: dict[int, list[str]] = {t: [] for t in targets}
-    gmin = int(cfg.get("phone_min_price", 0) or 0)
-    gmax = int(cfg.get("phone_max_price", 0) or 0)
-    grange = {"min_price": gmin, "max_price": gmax}
-    kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
-
     print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
     print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")
 
@@ -287,10 +282,25 @@ def main() -> int:
     bot.save_seen(seen)
     save_last_run_ts(time.time())
     print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")
+    if FORCE_SCAN:
+        for t in targets:
+            bot.send(t, f"✅ Quét xong. Tin mới: <b>{found}</b> (free {free_count}, máy {phone_count}).")
     return 0
 
 
 STATE: tuple[dict | None, list[int] | None] = (None, None)
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Quét lỗi] {exc}", file=sys.stderr)
+        if bot.TOKEN and FORCE_SCAN:
+            try:
+                if STATE == (None, None):
+                    STATE = fetch_remote_state()
+                for target in resolve_subscribers():
+                    bot.send(target, f"⚠️ Lỗi khi quét: {exc}")
+            except Exception as notify_exc:  # noqa: BLE001
+                print(f"[Telegram báo lỗi thất bại] {notify_exc}", file=sys.stderr)
+        raise

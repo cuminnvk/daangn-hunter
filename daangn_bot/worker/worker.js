@@ -311,7 +311,7 @@ async function viToKorean(env, text) {
 // --------------------------------------------------------------------------
 // Gọi GitHub Actions chạy quét ngay
 // --------------------------------------------------------------------------
-async function triggerScan(env) {
+async function triggerScan(env, payload = { manual: true }) {
   if (!env.GH_TOKEN || !env.GH_REPO) return false;
   const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/dispatches`, {
     method: "POST",
@@ -321,9 +321,28 @@ async function triggerScan(env) {
       "User-Agent": "daangn-bot-worker",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ event_type: "scan" }),
+    body: JSON.stringify({ event_type: "scan", client_payload: payload }),
   });
   return r.status === 204;
+}
+
+async function triggerAutoScanIfDue(env) {
+  const cfg = await getConfig(env);
+  const intervalMs = Math.max(5, parseInt(cfg.scan_interval_minutes || 30, 10)) * 60 * 1000;
+  const now = Date.now();
+  const last = parseInt((await env.BOT_KV.get("auto_last_dispatch")) || "0", 10) || 0;
+  if (last > 0 && now - last < intervalMs) {
+    console.log(`Auto scan skip: ${Math.ceil((intervalMs - (now - last)) / 1000)}s left`);
+    return false;
+  }
+  const ok = await triggerScan(env, { manual: false, source: "worker_cron" });
+  if (ok) {
+    await env.BOT_KV.put("auto_last_dispatch", String(now));
+    console.log("Auto scan dispatched");
+  } else {
+    console.log("Auto scan dispatch failed");
+  }
+  return ok;
 }
 
 // Hủy MỌI lượt quét đang chạy trên GitHub Actions (nút "Dừng quét").
@@ -446,7 +465,8 @@ async function handleCallback(env, cb) {
   }
 
   if (data === "scan") {
-    const ok = await triggerScan(env);
+    const ok = await triggerScan(env, { manual: true, source: "telegram_button" });
+    if (ok) await env.BOT_KV.put("auto_last_dispatch", String(Date.now()));
     await answer(env, cb.id, ok ? "Đã kích hoạt quét!" : "Sẽ quét ở lần kế tiếp");
     const note = ok
       ? "🔍 Đã kích hoạt quét trên GitHub Actions — kết quả sẽ tới trong vài phút."
@@ -542,7 +562,8 @@ async function handleMessage(env, msg) {
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (text === "/scan") {
-    const ok = await triggerScan(env);
+    const ok = await triggerScan(env, { manual: true, source: "telegram_command" });
+    if (ok) await env.BOT_KV.put("auto_last_dispatch", String(Date.now()));
     return send(env, chatId, ok ? "🔍 Đã kích hoạt quét!" : "🔍 Bot sẽ quét theo lịch (chưa cấu hình quét ngay).");
   }
 
@@ -660,6 +681,10 @@ async function handleMessage(env, msg) {
 // Entry point
 // --------------------------------------------------------------------------
 export default {
+  async scheduled(_event, env, ctx) {
+    ctx.waitUntil(triggerAutoScanIfDue(env).catch((e) => console.log("Auto scan error:", e)));
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
 

@@ -40,6 +40,12 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
+      - name: Refresh scan state
+        run: |
+          git fetch origin main --depth=1
+          git checkout origin/main -- daangn_bot/seen.json daangn_bot/last_run.json || true
+        working-directory: ${{ github.workspace }}
+
       - name: Run scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

@@ -38,6 +38,37 @@ ELECTRONICS_WORDS = [
 ]
 
 # ---------------------------------------------------------------------------
+# PHỤ KIỆN điện thoại (KHÔNG phải máy) — loại bỏ khi săn điện thoại.
+# Chỉ kiểm tra trong TIÊU ĐỀ để tránh loại nhầm tin "tặng kèm sạc".
+# ---------------------------------------------------------------------------
+ACCESSORY_WORDS = [
+    "케이스", "커버", "범퍼", "그립톡", "스트랩", "파우치", "젤리", "젤리케이스",
+    "보호필름", "강화유리", "액정필름", "유리필름", "필름", "보호",
+    "거치대", "홀더", "스탠드", "마운트", "젠더", "어댑터", "아답터",
+    "유심", "심카드", "메모리카드", "sd카드",
+    "보조배터리", "배터리팩", "데코", "스티커", "악세사리", "악세서리",
+    "부품용", "부속품", "공박스", "박스만", "이어팁", "정품박스",
+]
+# Từ chỉ ĐÚNG là điện thoại (máy thật).
+PHONE_WORDS = [
+    "아이폰", "iphone", "갤럭시", "galaxy", "스마트폰", "휴대폰", "핸드폰",
+    "갤s", "갤노트", "갤z", "노트", "플립", "폴드", "아이폰se", "se2", "se3",
+    "픽셀", "pixel", "샤오미", "홍미", "공기계", "자급제", "갤럭",
+]
+
+
+def is_accessory(title: str, content: str = "") -> bool:
+    """True nếu tin rao là PHỤ KIỆN (vỏ, ốp, cáp, sạc, kính cường lực...)."""
+    t = (title or "").lower()
+    return any(w in t for w in ACCESSORY_WORDS)
+
+
+def looks_like_phone(title: str, content: str = "") -> bool:
+    """True nếu tin rao đúng là một chiếc điện thoại."""
+    low = (title + " " + content).lower()
+    return any(w in low for w in PHONE_WORDS)
+
+# ---------------------------------------------------------------------------
 # Phân tích tình trạng máy
 # ---------------------------------------------------------------------------
 BROKEN_WORDS = [

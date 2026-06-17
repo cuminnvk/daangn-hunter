@@ -96,6 +96,10 @@ def main() -> int:
     ai_on = bool(cfg.get("use_ai") and bot.GROQ_KEY)
     ai_budget = int(cfg.get("ai_max_calls", 30))
     found = 0
+    free_count = 0
+    phone_count = 0
+    free_limit = int(cfg.get("free_limit", 20) or 0)
+    phone_limit = int(cfg.get("phone_limit", 20) or 0)
     processed: set[str] = set()
 
     with sync_playwright() as p:
@@ -113,13 +117,17 @@ def main() -> int:
         kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
 
         def scan_free_region(rid, rname):
-            nonlocal found, ai_budget
+            nonlocal found, ai_budget, free_count
+            if free_limit and free_count >= free_limit:
+                return
             try:
                 free_items = scraper.scrape_free(page, rid, rname)
             except Exception as exc:  # noqa: BLE001
                 print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
                 return
             for it in free_items:
+                if free_limit and free_count >= free_limit:
+                    return
                 if it["id"] in processed:
                     continue
                 cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
@@ -135,22 +143,33 @@ def main() -> int:
                         ai_budget -= 1
                 msg = bot.build_message(it, cond, "나눔", True, vi)
                 found += 1
+                free_count += 1
                 for t in targets:
                     bot.send(t, msg)
                 seen.add(it["id"])
                 time.sleep(0.4)
 
         def scan_phones_region(rid, rname):
-            nonlocal found, ai_budget
+            nonlocal found, ai_budget, phone_count
             for kw in kws:
+                if phone_limit and phone_count >= phone_limit:
+                    return
                 try:
                     items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                     continue
                 for it in items:
+                    if phone_limit and phone_count >= phone_limit:
+                        return
                     if it["id"] in processed:
                         continue
+                    # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
+                    if cfg.get("phones_only", True):
+                        if scraper.is_accessory(it["title"], it["content"]):
+                            continue
+                        if not scraper.looks_like_phone(it["title"], it["content"]):
+                            continue
                     cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
                     if not bot.match_phone(it, grange, cfg, cond):
                         continue
@@ -162,20 +181,27 @@ def main() -> int:
                         vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"))
                         if vi:
                             ai_budget -= 1
+                        if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):
+                            continue
                     msg = bot.build_message(it, cond, kw, False, vi)
                     found += 1
+                    phone_count += 1
                     for t in targets:
                         bot.send(t, msg)
                     seen.add(it["id"])
                     time.sleep(0.4)
 
         for region in cfg.get("regions", []):
+            done_free = (not free_limit) or free_count >= free_limit
+            done_phone = (not phone_limit) or phone_count >= phone_limit
+            if done_free and done_phone:
+                break
             rid = str(region.get("id"))
             rname = region.get("name", "")
             # Ưu tiên đồ MIỄN PHÍ trước
             if cfg.get("free_electronics") and cfg.get("free_first", True):
                 scan_free_region(rid, rname)
-            # Quét MỌI máy trong khoảng giá
+            # Quét điện thoại trong khoảng giá
             scan_phones_region(rid, rname)
             # Nếu không ưu tiên free thì quét free sau
             if cfg.get("free_electronics") and not cfg.get("free_first", True):
@@ -184,7 +210,7 @@ def main() -> int:
         browser.close()
 
     bot.save_seen(seen)
-    print(f"[Quét xong] Tin mới gửi đi: {found}")
+    print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")
     return 0
 
 

@@ -13,7 +13,7 @@ id = "00e066114aab46368000afb2d6df3dd7"
 # Biến công khai (không bí mật) có thể đặt ở đây.
 # Repo GitHub để bấm "Quét ngay" (vd "tenban/daangn-hunter").
 [vars]
-GH_REPO = ""
+GH_REPO = "cuminnvk/daangn-hunter"
 
 # CÁC SECRET (đặt bằng lệnh, KHÔNG ghi vào file này):
 #   npx wrangler secret put BOT_TOKEN       # token Telegram

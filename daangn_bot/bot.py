@@ -67,6 +67,7 @@ cfg_lock = threading.Lock()
 scan_lock = threading.Lock()
 scan_event = threading.Event()      # kích hoạt quét ngay
 stop_event = threading.Event()
+cancel_scan = threading.Event()     # yêu cầu DỪNG lượt quét đang chạy
 pending: dict[int, dict] = {}        # trạng thái nhập liệu theo chat
 last_scan_info = {"time": None, "found": 0}
 
@@ -93,6 +94,9 @@ DEFAULT_CONFIG = {
     "phone_max_price": 60000,
     "phone_keywords": ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
     "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
+    "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
+    "free_limit": 20,           # số tin đồ free tối đa mỗi lượt quét
+    "phone_limit": 20,          # số tin điện thoại tối đa mỗi lượt quét
     "free_electronics": True,
     "free_first": True,         # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
@@ -260,7 +264,7 @@ def main_menu_markup(cfg: dict) -> dict:
     lo = cfg.get("phone_min_price", 0) or 0
     hi = cfg.get("phone_max_price", 0) or 0
     return kb([
-        [btn("🔍 Quét ngay", "scan")],
+        [btn("🔍 Quét ngay", "scan"), btn("⏹ Dừng quét", "stopscan")],
         [btn(f"💰 Giá máy: {won(lo)} → {won(hi)}", "price")],
         [btn(f"🎁 Đồ điện tử miễn phí: {free}", "togglefree")],
         [btn(f"⏱ Tần suất: {cfg.get('scan_interval_minutes')} phút", "interval")],
@@ -380,11 +384,16 @@ def interval_markup(cfg: dict) -> dict:
 def settings_markup(cfg: dict) -> dict:
     def mark(v):
         return "✅" if v else "⬜"
+    fl = cfg.get("free_limit", 20)
+    pl = cfg.get("phone_limit", 20)
     return kb([
+        [btn(f"{mark(cfg.get('phones_only', True))} Chỉ điện thoại (loại vỏ/ốp)", "t:phones_only")],
+        [btn(f"{mark(cfg.get('strict_good', True))} Chỉ máy còn tốt (nghiêm ngặt)", "t:strict_good")],
         [btn(f"{mark(cfg.get('skip_broken'))} Bỏ máy hỏng/lỗi", "t:skip_broken")],
         [btn(f"{mark(cfg.get('skip_sold'))} Bỏ tin đã bán", "t:skip_sold")],
         [btn(f"{mark(cfg.get('skip_reserved'))} Bỏ tin đang giữ chỗ", "t:skip_reserved")],
-        [btn(f"{mark(cfg.get('use_ai'))} AI dịch & đánh giá (Groq)", "t:use_ai")],
+        [btn(f"{mark(cfg.get('use_ai'))} AI dịch & phân tích (Groq)", "t:use_ai")],
+        [btn(f"🔢 Giới hạn: {fl} free / {pl} máy / lượt", "setlimit")],
         [btn("⬅️ Về menu chính", "home")],
     ])
 
@@ -460,9 +469,21 @@ def handle_callback(cb: dict):
 
     if data == "scan":
         answer_cb(cb_id, "Bắt đầu quét...")
-        edit(chat_id, msg_id, "🔍 Đang quét... (vài phút)", kb([[btn("⬅️ Về menu chính", "home")]]))
+        cancel_scan.clear()
+        edit(chat_id, msg_id, "🔍 Đang quét... (vài phút)", kb([[btn("⏹ Dừng quét", "stopscan")], [btn("⬅️ Về menu chính", "home")]]))
         threading.Thread(target=run_scan, kwargs={"manual_chat": chat_id}, daemon=True).start()
         return
+
+    if data == "stopscan":
+        cancel_scan.set()
+        answer_cb(cb_id, "Đang dừng quét...")
+        return send(chat_id, "⏹ Đã yêu cầu dừng. Lượt quét sẽ ngừng sau tin hiện tại.")
+
+    if data == "setlimit":
+        pending[chat_id] = {"action": "setlimit", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "🔢 Gửi giới hạn <b>FREE MÁY</b> mỗi lượt (2 số), ví dụ:\n"
+                             "<b>20 20</b>  (20 đồ free + 20 điện thoại)")
 
     if data.startswith("int:"):
         m = int(data.split(":")[1])
@@ -579,6 +600,19 @@ def handle_message(msg: dict):
         pending.pop(chat_id, None)
         send(chat_id, f"✅ Đã đặt khoảng giá: từ <b>{won(lo)}</b> đến <b>{won(hi)}</b>.")
         return show_main(chat_id)
+    if action == "setlimit":
+        import re as _re
+        nums = [int(n) for n in _re.findall(r"\d+", text)]
+        if len(nums) < 2:
+            return send(chat_id, "⚠️ Gửi 2 số: FREE rồi MÁY, ví dụ <b>20 20</b>")
+        with cfg_lock:
+            cfg = load_config()
+            cfg["free_limit"] = max(0, nums[0])
+            cfg["phone_limit"] = max(0, nums[1])
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Mỗi lượt quét tối đa: <b>{nums[0]}</b> đồ free + <b>{nums[1]}</b> điện thoại.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -692,6 +726,11 @@ def run_scan(manual_chat: int | None = None):
         ai_on = bool(cfg.get("use_ai") and GROQ_KEY)
         ai_budget = int(cfg.get("ai_max_calls", 30))
         found = 0
+        free_count = 0
+        phone_count = 0
+        free_limit = int(cfg.get("free_limit", 20) or 0)
+        phone_limit = int(cfg.get("phone_limit", 20) or 0)
+        stopped = False
         processed: set[str] = set()
 
         with sync_playwright() as p:
@@ -709,13 +748,20 @@ def run_scan(manual_chat: int | None = None):
             kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
 
             def scan_free_region(rid, rname):
-                nonlocal found, ai_budget
+                nonlocal found, ai_budget, free_count, stopped
+                if free_limit and free_count >= free_limit:
+                    return
                 try:
                     free_items = scraper.scrape_free(page, rid, rname)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
                     return
                 for it in free_items:
+                    if cancel_scan.is_set():
+                        stopped = True
+                        return
+                    if free_limit and free_count >= free_limit:
+                        return
                     if it["id"] in processed:
                         continue
                     cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
@@ -731,22 +777,36 @@ def run_scan(manual_chat: int | None = None):
                             ai_budget -= 1
                     msg = build_message(it, cond, "나눔", True, vi)
                     found += 1
+                    free_count += 1
                     for t in targets:
                         send(t, msg)
                     seen.add(it["id"])
                     time.sleep(0.4)
 
             def scan_phones_region(rid, rname):
-                nonlocal found, ai_budget
+                nonlocal found, ai_budget, phone_count, stopped
                 for kw in kws:
+                    if phone_limit and phone_count >= phone_limit:
+                        return
                     try:
                         items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax)
                     except Exception as exc:  # noqa: BLE001
                         print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                         continue
                     for it in items:
+                        if cancel_scan.is_set():
+                            stopped = True
+                            return
+                        if phone_limit and phone_count >= phone_limit:
+                            return
                         if it["id"] in processed:
                             continue
+                        # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
+                        if cfg.get("phones_only", True):
+                            if scraper.is_accessory(it["title"], it["content"]):
+                                continue
+                            if not scraper.looks_like_phone(it["title"], it["content"]):
+                                continue
                         cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
                         if not match_phone(it, grange, cfg, cond):
                             continue
@@ -758,20 +818,31 @@ def run_scan(manual_chat: int | None = None):
                             vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"))
                             if vi:
                                 ai_budget -= 1
+                            # AI thẩm định: bỏ qua nếu không phải điện thoại hoặc đang hỏng.
+                            if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):
+                                continue
                         msg = build_message(it, cond, kw, False, vi)
                         found += 1
+                        phone_count += 1
                         for t in targets:
                             send(t, msg)
                         seen.add(it["id"])
                         time.sleep(0.4)
 
             for region in cfg.get("regions", []):
+                if stopped or cancel_scan.is_set():
+                    stopped = True
+                    break
+                done_free = (not free_limit) or free_count >= free_limit
+                done_phone = (not phone_limit) or phone_count >= phone_limit
+                if done_free and done_phone:
+                    break
                 rid = str(region.get("id"))
                 rname = region.get("name", "")
                 # Ưu tiên đồ MIỄN PHÍ trước
                 if cfg.get("free_electronics") and cfg.get("free_first", True):
                     scan_free_region(rid, rname)
-                # Quét MỌI máy trong khoảng giá
+                # Quét điện thoại trong khoảng giá
                 scan_phones_region(rid, rname)
                 # Nếu không ưu tiên free thì quét free sau
                 if cfg.get("free_electronics") and not cfg.get("free_first", True):
@@ -782,9 +853,14 @@ def run_scan(manual_chat: int | None = None):
         save_seen(seen)
         last_scan_info["time"] = time.time()
         last_scan_info["found"] = found
-        print(f"[Quét xong] tin mới: {found}")
+        cancel_scan.clear()
+        print(f"[Quét xong] tin mới: {found} (free {free_count}, máy {phone_count})"
+              + (" — ĐÃ DỪNG" if stopped else ""))
         if manual_chat:
-            send(manual_chat, f"✅ Quét xong. Tin mới: <b>{found}</b>.")
+            tin = f"✅ Quét xong. Tin mới: <b>{found}</b> (free {free_count}, máy {phone_count})."
+            if stopped:
+                tin = f"⏹ Đã dừng. Đã gửi: <b>{found}</b> tin (free {free_count}, máy {phone_count})."
+            send(manual_chat, tin)
     except Exception as exc:  # noqa: BLE001
         print(f"[Quét lỗi] {exc}", file=sys.stderr)
         if manual_chat:

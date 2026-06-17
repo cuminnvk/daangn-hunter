@@ -40,6 +40,9 @@ const DEFAULT_CONFIG = {
   phone_max_price: 60000,
   phone_keywords: ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
   strict_good: true,
+  phones_only: true,
+  free_limit: 20,
+  phone_limit: 20,
   free_electronics: true,
   free_first: true,
   scan_interval_minutes: 30,
@@ -166,7 +169,7 @@ function mainMenu(cfg) {
   const free = cfg.free_electronics ? "BẬT ✅" : "TẮT ⬜";
   const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
   return kb([
-    [btn("🔍 Quét ngay", "scan")],
+    [btn("🔍 Quét ngay", "scan"), btn("⏹ Dừng quét", "stopscan")],
     [btn(`💰 Giá máy: ${won(lo)} → ${won(hi)}`, "price")],
     [btn(`🎁 Đồ điện tử miễn phí: ${free}`, "togglefree")],
     [btn(`⏱ Tần suất: ${cfg.scan_interval_minutes} phút`, "interval")],
@@ -239,11 +242,15 @@ function intervalMenu(cfg) {
 }
 function settingsMenu(cfg) {
   const m = (v) => (v ? "✅" : "⬜");
+  const fl = cfg.free_limit ?? 20, pl = cfg.phone_limit ?? 20;
   return kb([
+    [btn(`${m(cfg.phones_only !== false)} Chỉ điện thoại (loại vỏ/ốp)`, "t:phones_only")],
+    [btn(`${m(cfg.strict_good !== false)} Chỉ máy còn tốt (nghiêm ngặt)`, "t:strict_good")],
     [btn(`${m(cfg.skip_broken)} Bỏ máy hỏng/lỗi`, "t:skip_broken")],
     [btn(`${m(cfg.skip_sold)} Bỏ tin đã bán`, "t:skip_sold")],
     [btn(`${m(cfg.skip_reserved)} Bỏ tin đang giữ chỗ`, "t:skip_reserved")],
-    [btn(`${m(cfg.use_ai)} AI dịch & đánh giá (Groq)`, "t:use_ai")],
+    [btn(`${m(cfg.use_ai)} AI dịch & phân tích (Groq)`, "t:use_ai")],
+    [btn(`🔢 Giới hạn: ${fl} free / ${pl} máy / lượt`, "setlimit")],
     [btn("⬅️ Về menu chính", "home")],
   ]);
 }
@@ -293,6 +300,42 @@ async function triggerScan(env) {
   return r.status === 204;
 }
 
+// Hủy MỌI lượt quét đang chạy trên GitHub Actions (nút "Dừng quét").
+async function cancelScans(env) {
+  if (!env.GH_TOKEN || !env.GH_REPO) return false;
+  const headers = {
+    Authorization: `Bearer ${env.GH_TOKEN}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "daangn-bot-worker",
+  };
+  try {
+    const r = await fetch(
+      `https://api.github.com/repos/${env.GH_REPO}/actions/runs?status=in_progress&per_page=20`,
+      { headers });
+    if (!r.ok) return false;
+    const data = await r.json();
+    const runs = (data.workflow_runs || []);
+    // Hủy cả lượt đang queued.
+    const r2 = await fetch(
+      `https://api.github.com/repos/${env.GH_REPO}/actions/runs?status=queued&per_page=20`,
+      { headers });
+    if (r2.ok) {
+      const d2 = await r2.json();
+      runs.push(...(d2.workflow_runs || []));
+    }
+    let n = 0;
+    for (const run of runs) {
+      const c = await fetch(
+        `https://api.github.com/repos/${env.GH_REPO}/actions/runs/${run.id}/cancel`,
+        { method: "POST", headers });
+      if (c.status === 202) n++;
+    }
+    return n;
+  } catch (_) {
+    return false;
+  }
+}
+
 // --------------------------------------------------------------------------
 // Xử lý callback (nút bấm)
 // --------------------------------------------------------------------------
@@ -320,6 +363,11 @@ async function handleCallback(env, cb) {
   }
   if (data === "addmenu") { await answer(env, cb.id); return edit(env, chatId, msgId, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", addMenu()); }
   if (data === "settings") { await answer(env, cb.id); return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg)); }
+  if (data === "setlimit") {
+    await setPending(env, chatId, { action: "setlimit" });
+    await answer(env, cb.id);
+    return send(env, chatId, "🔢 Gửi giới hạn <b>FREE MÁY</b> mỗi lượt (2 số), ví dụ:\n<b>20 20</b>  (20 đồ free + 20 điện thoại)");
+  }
   if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
 
   if (data === "status") {
@@ -347,6 +395,15 @@ async function handleCallback(env, cb) {
     const note = ok
       ? "🔍 Đã kích hoạt quét trên GitHub Actions — kết quả sẽ tới trong vài phút."
       : "🔍 Chưa cấu hình GH_TOKEN/GH_REPO nên không quét ngay được. Bot vẫn tự quét theo lịch.";
+    return edit(env, chatId, msgId, note, kb([[btn("⏹ Dừng quét", "stopscan")], [btn("⬅️ Về menu chính", "home")]]));
+  }
+
+  if (data === "stopscan") {
+    await answer(env, cb.id, "Đang dừng...");
+    const n = await cancelScans(env);
+    const note = (n === false)
+      ? "⏹ Chưa cấu hình GH_TOKEN nên không dừng từ xa được."
+      : (n > 0 ? `⏹ Đã yêu cầu dừng <b>${n}</b> lượt quét đang chạy.` : "⏹ Hiện không có lượt quét nào đang chạy.");
     return edit(env, chatId, msgId, note, kb([[btn("⬅️ Về menu chính", "home")]]));
   }
 
@@ -448,6 +505,16 @@ async function handleMessage(env, msg) {
     await saveConfig(env, cfg);
     await clearPending(env, chatId);
     await send(env, chatId, `✅ Đã đặt khoảng giá: từ <b>${won(rng[0])}</b> đến <b>${won(rng[1])}</b>.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (state.action === "setlimit") {
+    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
+    if (nums.length < 2) return send(env, chatId, "⚠️ Gửi 2 số: FREE rồi MÁY, ví dụ <b>20 20</b>");
+    cfg.free_limit = Math.max(0, nums[0]);
+    cfg.phone_limit = Math.max(0, nums[1]);
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Mỗi lượt quét tối đa: <b>${nums[0]}</b> đồ free + <b>${nums[1]}</b> điện thoại.`);
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (state.action === "setmax" || state.action === "setmin") {

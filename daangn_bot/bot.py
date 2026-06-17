@@ -91,7 +91,7 @@ DEFAULT_CONFIG = {
         {"keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000},
     ],
     # Săn MOI loại máy trong khoảng giá này (không cần thêm từng máy).
-    "phone_min_price": 20000,
+    "phone_min_price": 0,
     "phone_max_price": 60000,
     "phone_keywords": ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
     "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát

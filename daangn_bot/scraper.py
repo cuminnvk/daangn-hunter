@@ -183,10 +183,10 @@ def analyze_condition(text: str) -> dict:
 def detect_negotiable(text: str) -> str:
     low = text.lower()
     if any(w in low for w in NEGO_NO):
-        return "Không (giá cố định)"
+        return "Mua ngay, không thương lượng"
     if any(w in low for w in NEGO_YES):
-        return "Có thể"
-    return "Không rõ (cứ chat hỏi)"
+        return "Có thể thương lượng"
+    return "Mua ngay, chưa thấy dấu hiệu thương lượng"
 
 
 # ---------------------------------------------------------------------------

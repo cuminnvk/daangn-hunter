@@ -52,6 +52,7 @@ const DEFAULT_CONFIG = {
   seen_ttl_hours: 48,
   region_filter_enabled: false,
   region_filter_terms: [],
+  groq_api_keys: [],
   free_electronics: true,
   free_first: true,
   scan_interval_minutes: 30,
@@ -258,6 +259,7 @@ function settingsMenu(cfg) {
   const qe = cfg.quiet_end_hour ?? 7;
   const ttl = cfg.seen_ttl_hours ?? 48;
   const rt = (cfg.region_filter_terms || []).slice(0, 2).join(", ") || "chưa đặt";
+  const kn = (cfg.groq_api_keys || []).length;
   return kb([
     [btn(`${m(cfg.phones_only !== false)} Chỉ điện thoại (loại vỏ/ốp)`, "t:phones_only")],
     [btn(`${m(cfg.strict_good !== false)} Chỉ máy còn tốt (nghiêm ngặt)`, "t:strict_good")],
@@ -265,6 +267,7 @@ function settingsMenu(cfg) {
     [btn(`${m(cfg.skip_sold)} Bỏ tin đã bán`, "t:skip_sold")],
     [btn(`${m(cfg.skip_reserved)} Bỏ tin đang giữ chỗ`, "t:skip_reserved")],
     [btn(`${m(cfg.use_ai)} AI dịch & phân tích (Groq)`, "t:use_ai")],
+    [btn(`🔑 API key AI: ${kn} key`, "setkeys")],
     [btn(`${m(cfg.digest_mode)} Chế độ gửi gộp (digest)`, "t:digest_mode")],
     [btn(`${m(cfg.quiet_hours_enabled)} Giờ yên lặng (${qs}:00-${qe}:00)`, "t:quiet_hours_enabled")],
     [btn("🌙 Đặt giờ yên lặng", "setquiet")],
@@ -415,6 +418,11 @@ async function handleCallback(env, cb) {
     await setPending(env, chatId, { action: "setttl" });
     await answer(env, cb.id);
     return send(env, chatId, "🕒 Gửi số giờ không lặp tin, ví dụ: <b>48</b>");
+  }
+  if (data === "setkeys") {
+    await setPending(env, chatId, { action: "setkeys" });
+    await answer(env, cb.id);
+    return send(env, chatId, "🔑 Gửi danh sách API key Groq, <b>mỗi key 1 dòng</b>. Bot sẽ tự đổi key khi bị limit.");
   }
   if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
 
@@ -611,6 +619,13 @@ async function handleMessage(env, msg) {
     await saveConfig(env, cfg);
     await clearPending(env, chatId);
     await send(env, chatId, `✅ Đã đặt không lặp tin trong <b>${cfg.seen_ttl_hours}</b> giờ.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (state.action === "setkeys") {
+    cfg.groq_api_keys = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Đã lưu <b>${cfg.groq_api_keys.length}</b> API key AI.`);
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (state.action === "setmax" || state.action === "setmin") {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import Iterable
 
 import requests
 
@@ -25,6 +26,7 @@ def _user_prompt(item: dict, cond: dict, is_free: bool) -> str:
     loai = "đồ điện tử miễn phí" if is_free else "điện thoại"
     return (
         f"Phân tích tin rao {loai} sau (tiếng Hàn). Trả JSON với các khóa:\n"
+        '- "ten_goc": chép lại tên gốc tiếng Hàn ngắn gọn, chuẩn hóa khoảng trắng.\n'
         '- "ten": tên món đồ dịch sang tiếng Việt ngắn gọn (kèm đời máy/dung lượng nếu có).\n'
         '- "tomtat": 1 câu tóm tắt nhanh, dễ đọc, tiếng Việt.\n'
         '- "danhgia": 4-6 câu tiếng Việt, cụ thể: màn hình, pin, vỏ, lỗi tiềm ẩn, '
@@ -45,10 +47,24 @@ def _user_prompt(item: dict, cond: dict, is_free: bool) -> str:
     )
 
 
-def describe_vi(item: dict, cond: dict, key: str, model: str = DEFAULT_MODEL,
+def _normalize_keys(key: str | Iterable[str] | None) -> list[str]:
+    if not key:
+        return []
+    if isinstance(key, str):
+        return [key.strip()] if key.strip() else []
+    out = []
+    for k in key:
+        ks = str(k).strip()
+        if ks:
+            out.append(ks)
+    return out
+
+
+def describe_vi(item: dict, cond: dict, key: str | Iterable[str], model: str = DEFAULT_MODEL,
                 is_free: bool = False) -> dict | None:
     """Trả về dict thẩm định tiếng Việt đầy đủ hoặc None nếu lỗi."""
-    if not key:
+    keys = _normalize_keys(key)
+    if not keys:
         return None
     body = {
         "model": model,
@@ -57,40 +73,48 @@ def describe_vi(item: dict, cond: dict, key: str, model: str = DEFAULT_MODEL,
             {"role": "user", "content": _user_prompt(item, cond, is_free)},
         ],
         "temperature": 0.1,
-        "max_tokens": 400,
+        "max_tokens": 500,
         "response_format": {"type": "json_object"},
     }
-    try:
-        resp = requests.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json=body,
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            print(f"  [Groq lỗi] {resp.status_code}: {resp.text[:160]}", file=sys.stderr)
-            return None
-        text = resp.json()["choices"][0]["message"]["content"]
-        data = json.loads(text)
-        la_dt = data.get("la_dien_thoai")
-        con_tot = data.get("con_tot")
-        bo_qua = data.get("bo_qua")
-        # Suy ra bo_qua nếu model không trả: chỉ áp dụng cho điện thoại (không free).
-        if bo_qua is None and not is_free:
-            bo_qua = (la_dt is False) or (con_tot is False)
-        return {
-            "ten": (data.get("ten") or "").strip(),
-            "tomtat": (data.get("tomtat") or "").strip(),
-            "danhgia": (data.get("danhgia") or "").strip(),
-            "vung": (data.get("vung") or "").strip(),
-            "nguoi_ban": (data.get("nguoi_ban") or "").strip(),
-            "la_dien_thoai": la_dt,
-            "con_tot": con_tot,
-            "bo_qua": bool(bo_qua) if not is_free else False,
-        }
-    except (requests.RequestException, KeyError, IndexError, json.JSONDecodeError) as exc:
-        print(f"  [Groq lỗi] {exc}", file=sys.stderr)
-        return None
+    last_error = None
+    for api_key in keys:
+        try:
+            resp = requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=30,
+            )
+            if resp.status_code == 429:
+                last_error = f"429 rate limit với key {api_key[:8]}..."
+                continue
+            if resp.status_code != 200:
+                last_error = f"{resp.status_code}: {resp.text[:160]}"
+                continue
+            text = resp.json()["choices"][0]["message"]["content"]
+            data = json.loads(text)
+            la_dt = data.get("la_dien_thoai")
+            con_tot = data.get("con_tot")
+            bo_qua = data.get("bo_qua")
+            if bo_qua is None and not is_free:
+                bo_qua = (la_dt is False) or (con_tot is False)
+            return {
+                "ten_goc": (data.get("ten_goc") or item.get("title") or "").strip(),
+                "ten": (data.get("ten") or "").strip(),
+                "tomtat": (data.get("tomtat") or "").strip(),
+                "danhgia": (data.get("danhgia") or "").strip(),
+                "vung": (data.get("vung") or "").strip(),
+                "nguoi_ban": (data.get("nguoi_ban") or "").strip(),
+                "la_dien_thoai": la_dt,
+                "con_tot": con_tot,
+                "bo_qua": bool(bo_qua) if not is_free else False,
+            }
+        except (requests.RequestException, KeyError, IndexError, json.JSONDecodeError) as exc:
+            last_error = str(exc)
+            continue
+    if last_error:
+        print(f"  [Groq lỗi] {last_error}", file=sys.stderr)
+    return None
 
 
 if __name__ == "__main__":

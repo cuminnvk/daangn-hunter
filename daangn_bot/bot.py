@@ -107,6 +107,7 @@ DEFAULT_CONFIG = {
     "seen_ttl_hours": 48,       # tin đã quét sẽ không hiện lại trong 2 ngày
     "region_filter_enabled": False,
     "region_filter_terms": [],  # ví dụ ["역삼", "송도"]
+    "groq_api_keys": [],        # nhiều key Groq nhập từ Telegram, mỗi key 1 dòng
     "free_electronics": True,
     "free_first": True,         # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
@@ -211,6 +212,19 @@ def add_subscriber(chat_id: int) -> None:
     if chat_id not in subs:
         subs.append(chat_id)
         save_subs(subs)
+
+
+def get_groq_keys(cfg: dict | None = None) -> list[str]:
+    keys = []
+    if cfg:
+        keys.extend([str(k).strip() for k in cfg.get("groq_api_keys", []) if str(k).strip()])
+    if GROQ_KEY:
+        keys.append(GROQ_KEY)
+    out = []
+    for k in keys:
+        if k not in out:
+            out.append(k)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +534,7 @@ def settings_markup(cfg: dict) -> dict:
     r_on = cfg.get("region_filter_enabled", False)
     r_terms = ", ".join(cfg.get("region_filter_terms", [])[:2])
     r_text = r_terms if r_terms else "chưa đặt"
+    k_n = len(get_groq_keys(cfg))
     return kb([
         [btn(f"{mark(cfg.get('phones_only', True))} Chỉ điện thoại (loại vỏ/ốp)", "t:phones_only")],
         [btn(f"{mark(cfg.get('strict_good', True))} Chỉ máy còn tốt (nghiêm ngặt)", "t:strict_good")],
@@ -527,6 +542,7 @@ def settings_markup(cfg: dict) -> dict:
         [btn(f"{mark(cfg.get('skip_sold'))} Bỏ tin đã bán", "t:skip_sold")],
         [btn(f"{mark(cfg.get('skip_reserved'))} Bỏ tin đang giữ chỗ", "t:skip_reserved")],
         [btn(f"{mark(cfg.get('use_ai'))} AI dịch & phân tích (Groq)", "t:use_ai")],
+        [btn(f"🔑 API key AI: {k_n} key", "setkeys")],
         [btn(f"{mark(cfg.get('digest_mode', False))} Chế độ gửi gộp (digest)", "t:digest_mode")],
         [btn(f"{mark(q_on)} Giờ yên lặng ({q_st}:00-{q_en}:00)", "t:quiet_hours_enabled")],
         [btn("🌙 Đặt giờ yên lặng", "setquiet")],
@@ -646,6 +662,11 @@ def handle_callback(cb: dict):
         answer_cb(cb_id)
         return send(chat_id, "📍 Gửi danh sách vùng ưu tiên, cách nhau dấu phẩy. Ví dụ: <b>역삼동, 송도동</b>")
 
+    if data == "setkeys":
+        pending[chat_id] = {"action": "setkeys", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "🔑 Gửi danh sách API key Groq, <b>mỗi key 1 dòng</b>. Bot sẽ tự đổi key khi bị limit.")
+
     if data.startswith("int:"):
         m = int(data.split(":")[1])
         with cfg_lock:
@@ -709,25 +730,30 @@ def handle_callback(cb: dict):
 
 def vi_to_korean_keyword(text: str) -> str:
     """Chuyển tên máy tiếng Việt sang từ khóa tiếng Hàn bằng Groq (nếu cần)."""
-    if not GROQ_KEY or any("\uac00" <= c <= "\ud7a3" for c in text):
+    cfg = load_config()
+    keys = get_groq_keys(cfg)
+    if not keys or any("\uac00" <= c <= "\ud7a3" for c in text):
         return text  # đã có chữ Hàn hoặc không có key
-    try:
-        body = {
-            "model": groq_ai.DEFAULT_MODEL,
-            "messages": [
-                {"role": "system", "content": "Trả về DUY NHẤT từ khóa tìm kiếm tiếng Hàn cho tên thiết bị, không giải thích."},
-                {"role": "user", "content": f"Tên thiết bị: {text}"},
-            ],
-            "temperature": 0,
-            "max_tokens": 30,
-        }
-        r = requests.post(groq_ai.GROQ_URL,
-                          headers={"Authorization": f"Bearer {GROQ_KEY}"},
-                          json=body, timeout=20)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"].strip().strip('"')
-    except (requests.RequestException, KeyError, IndexError):
-        pass
+    body = {
+        "model": groq_ai.DEFAULT_MODEL,
+        "messages": [
+            {"role": "system", "content": "Trả về DUY NHẤT từ khóa tìm kiếm tiếng Hàn cho tên thiết bị, không giải thích."},
+            {"role": "user", "content": f"Tên thiết bị: {text}"},
+        ],
+        "temperature": 0,
+        "max_tokens": 30,
+    }
+    for key in keys:
+        try:
+            r = requests.post(groq_ai.GROQ_URL,
+                              headers={"Authorization": f"Bearer {key}"},
+                              json=body, timeout=20)
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip().strip('"')
+            if r.status_code == 429:
+                continue
+        except (requests.RequestException, KeyError, IndexError):
+            continue
     return text
 
 
@@ -824,6 +850,15 @@ def handle_message(msg: dict):
         else:
             send(chat_id, "✅ Đã xóa danh sách vùng ưu tiên.")
         return show_main(chat_id)
+    if action == "setkeys":
+        keys = [line.strip() for line in text.splitlines() if line.strip()]
+        with cfg_lock:
+            cfg = load_config()
+            cfg["groq_api_keys"] = keys[:20]
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Đã lưu <b>{len(keys[:20])}</b> API key AI.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -897,13 +932,15 @@ def match_free(item: dict, cfg: dict, cond: dict) -> bool:
 
 def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict | None) -> str:
     esc = html.escape
+    ten_goc = (vi or {}).get("ten_goc") or item.get("title", "")
     ten = clean_vi_text((vi or {}).get("ten") or fallback_title_vi(item["title"]), "Điện thoại")
-    vung = clean_vi_text((vi or {}).get("vung") or item.get("region", ""), "Không rõ")
-    nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or item.get("seller", ""), "")
+    vung = clean_vi_text((vi or {}).get("vung") or fallback_title_vi(item.get("region", "")), "Không rõ")
+    nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or item.get("seller", ""), item.get("seller", ""))
     tomtat = clean_vi_text((vi or {}).get("tomtat", ""), "")
     danhgia = clean_vi_text((vi or {}).get("danhgia", ""), "")
     head = "🎁 <b>[MIỄN PHÍ]</b> " if is_free else "📱 "
-    lines = [f"{head}<b>{esc(ten)}</b>"]
+    title_line = f"{esc(ten_goc)} / {esc(ten)}" if ten_goc else esc(ten)
+    lines = [f"{head}<b>{title_line}</b>"]
     if not is_free:
         lines.append(f"💰 {item['price']:,}원")
     else:
@@ -917,7 +954,7 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
     lines.append(f"🩺 Tình trạng: {cond['label']}")
     if not is_free:
         lines.append(f"🤝 Thương lượng: {scraper.detect_negotiable(item['content'])}")
-    lines.append("💬 Liên hệ: nhắn qua app Daangn")
+    lines.append("💬 Liên hệ: nhắn qua app 당근 (Daangn)")
     if tomtat:
         lines.append(f"🧾 {esc(tomtat)}")
     if danhgia:
@@ -940,7 +977,8 @@ def run_scan(manual_chat: int | None = None):
         targets = [manual_chat] if manual_chat else subs
         if not targets:
             print("[Quét] chưa có người nhận (chưa /start).")
-        ai_on = bool(cfg.get("use_ai") and GROQ_KEY)
+        ai_keys = get_groq_keys(cfg)
+        ai_on = bool(cfg.get("use_ai") and ai_keys)
         ai_budget = int(cfg.get("ai_max_calls", 30))
         found = 0
         free_count = 0
@@ -1008,7 +1046,7 @@ def run_scan(manual_chat: int | None = None):
                     processed.add(it["id"])
                     vi = None
                     if ai_on and ai_budget > 0:
-                        vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"), is_free=True)
+                        vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"), is_free=True)
                         if vi:
                             ai_budget -= 1
                     msg = build_message(it, cond, "나눔", True, vi)
@@ -1059,7 +1097,7 @@ def run_scan(manual_chat: int | None = None):
                         processed.add(it["id"])
                         vi = None
                         if ai_on and ai_budget > 0:
-                            vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"))
+                            vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"))
                             if vi:
                                 ai_budget -= 1
                             # AI thẩm định: bỏ qua nếu không phải điện thoại hoặc đang hỏng.

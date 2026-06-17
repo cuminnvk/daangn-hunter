@@ -124,7 +124,8 @@ def main() -> int:
         return 0
 
     seen = bot.load_seen()
-    ai_on = bool(cfg.get("use_ai") and bot.GROQ_KEY)
+    ai_keys = bot.get_groq_keys(cfg)
+    ai_on = bool(cfg.get("use_ai") and ai_keys)
     ai_budget = int(cfg.get("ai_max_calls", 30))
     found = 0
     free_count = 0
@@ -185,7 +186,7 @@ def main() -> int:
                 processed.add(it["id"])
                 vi = None
                 if ai_on and ai_budget > 0:
-                    vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"), is_free=True)
+                    vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"), is_free=True)
                     if vi:
                         ai_budget -= 1
                 msg = bot.build_message(it, cond, "나눔", True, vi)
@@ -228,7 +229,7 @@ def main() -> int:
                     processed.add(it["id"])
                     vi = None
                     if ai_on and ai_budget > 0:
-                        vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"))
+                        vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"))
                         if vi:
                             ai_budget -= 1
                         if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):

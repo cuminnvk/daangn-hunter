@@ -253,7 +253,10 @@ def get_groq_keys(cfg: dict | None = None) -> list[str]:
 def tg(method: str, **params):
     try:
         r = requests.post(f"{API}/{method}", json=params, timeout=40)
-        return r.json()
+        data = r.json()
+        if not data.get("ok"):
+            print(f"[TG lỗi] {method}: {data}", file=sys.stderr)
+        return data
     except requests.RequestException as exc:
         print(f"[TG lỗi] {method}: {exc}", file=sys.stderr)
         return {"ok": False}

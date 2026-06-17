@@ -327,14 +327,7 @@ async function triggerScan(env, payload = { manual: true }) {
 }
 
 async function triggerAutoScanIfDue(env) {
-  const cfg = await getConfig(env);
-  const intervalMs = Math.max(5, parseInt(cfg.scan_interval_minutes || 30, 10)) * 60 * 1000;
   const now = Date.now();
-  const last = parseInt((await env.BOT_KV.get("auto_last_dispatch")) || "0", 10) || 0;
-  if (last > 0 && now - last < intervalMs) {
-    console.log(`Auto scan skip: ${Math.ceil((intervalMs - (now - last)) / 1000)}s left`);
-    return false;
-  }
   const ok = await triggerScan(env, { manual: false, source: "worker_cron" });
   if (ok) {
     await env.BOT_KV.put("auto_last_dispatch", String(now));

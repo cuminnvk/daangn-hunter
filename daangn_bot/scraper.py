@@ -45,8 +45,15 @@ BROKEN_WORDS = [
     "침수", "먹통", "부품용", "부품 용", "수리용", "수리요", "불량",
     "안켜", "안 켜", "켜지지", "안나와", "미작동", "작동안", "작동 안",
     "광탈", "배터리광탈", "as-is", "에이에스", "기능이상", "터치불량",
+    # chập nguồn / lỗi sạc / quá nóng / màn ố
+    "충전불량", "충전안", "충전 안", "전원불량", "전원안", "전원 안",
+    "발열", "과열", "백화", "액정나감", "액정 나감", "터치안", "터치 안",
+    "명품", "액정줄", "세로줄심", "가로줄", "리퍼비시", "기교환",
 ]
-SOFT_FLAGS = ["잔상", "번인", "하자", "줄가", "세로줄", "멍"]
+SOFT_FLAGS = [
+    "잔상", "번인", "하자", "줄가", "세로줄", "멍",
+    "얼룩", "변색", "기스많", "스크래치", "흔집많", "찍힘",
+]
 GOOD_WORDS = [
     "s급", "에스급", "a급", "에이급", "최상급", "상태좋", "상태 좋",
     "깨끗", "무잔상", "잔상없", "기스없", "흠집없", "하자없", "이상없",
@@ -123,6 +130,7 @@ def analyze_condition(text: str) -> dict:
         "broken": broken,
         "signals": signals,
         "broken_hits": broken_hits,
+        "soft_bad": soft_bad,
     }
 
 
@@ -202,11 +210,16 @@ def _fetch(page, url: str) -> list[dict]:
     return captured[-1].get("fleamarketArticles", []) or []
 
 
-def scrape_keyword(page, region_id: str, region_name: str, keyword: str) -> list[dict]:
+def scrape_keyword(page, region_id: str, region_name: str, keyword: str,
+                   min_price: int | None = None, max_price: int | None = None) -> list[dict]:
     url = (
         f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
         f"&search={quote(keyword)}"
     )
+    if min_price is not None or max_price is not None:
+        lo = int(min_price) if min_price else 0
+        hi = int(max_price) if max_price else 0
+        url += f"&price={lo}__{hi}"
     return _parse_articles(_fetch(page, url), region_name)
 
 

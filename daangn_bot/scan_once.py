@@ -107,22 +107,52 @@ def main() -> int:
         )
         page = ctx.new_page()
 
-        for region in cfg.get("regions", []):
-            rid = str(region.get("id"))
-            rname = region.get("name", "")
+        gmin = int(cfg.get("phone_min_price", 0) or 0)
+        gmax = int(cfg.get("phone_max_price", 0) or 0)
+        grange = {"min_price": gmin, "max_price": gmax}
+        kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
 
-            # 1) Điện thoại theo từ khóa
-            for watch in cfg.get("watch", []):
+        def scan_free_region(rid, rname):
+            nonlocal found, ai_budget
+            try:
+                free_items = scraper.scrape_free(page, rid, rname)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
+                return
+            for it in free_items:
+                if it["id"] in processed:
+                    continue
+                cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
+                if not bot.match_free(it, cfg, cond):
+                    continue
+                processed.add(it["id"])
+                if it["id"] in seen:
+                    continue
+                vi = None
+                if ai_on and ai_budget > 0:
+                    vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"), is_free=True)
+                    if vi:
+                        ai_budget -= 1
+                msg = bot.build_message(it, cond, "나눔", True, vi)
+                found += 1
+                for t in targets:
+                    bot.send(t, msg)
+                seen.add(it["id"])
+                time.sleep(0.4)
+
+        def scan_phones_region(rid, rname):
+            nonlocal found, ai_budget
+            for kw in kws:
                 try:
-                    items = scraper.scrape_keyword(page, rid, rname, watch["keyword"])
+                    items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax)
                 except Exception as exc:  # noqa: BLE001
-                    print(f"  [Lỗi] {watch['keyword']} @ {rname}: {exc}", file=sys.stderr)
+                    print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                     continue
                 for it in items:
                     if it["id"] in processed:
                         continue
                     cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
-                    if not bot.match_phone(it, watch, cfg, cond):
+                    if not bot.match_phone(it, grange, cfg, cond):
                         continue
                     processed.add(it["id"])
                     if it["id"] in seen:
@@ -132,40 +162,24 @@ def main() -> int:
                         vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"))
                         if vi:
                             ai_budget -= 1
-                    msg = bot.build_message(it, cond, watch["keyword"], False, vi)
+                    msg = bot.build_message(it, cond, kw, False, vi)
                     found += 1
                     for t in targets:
                         bot.send(t, msg)
                     seen.add(it["id"])
                     time.sleep(0.4)
 
-            # 2) Đồ điện tử miễn phí
-            if cfg.get("free_electronics"):
-                try:
-                    free_items = scraper.scrape_free(page, rid, rname)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
-                    free_items = []
-                for it in free_items:
-                    if it["id"] in processed:
-                        continue
-                    cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
-                    if not bot.match_free(it, cfg, cond):
-                        continue
-                    processed.add(it["id"])
-                    if it["id"] in seen:
-                        continue
-                    vi = None
-                    if ai_on and ai_budget > 0:
-                        vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"), is_free=True)
-                        if vi:
-                            ai_budget -= 1
-                    msg = bot.build_message(it, cond, "나눔", True, vi)
-                    found += 1
-                    for t in targets:
-                        bot.send(t, msg)
-                    seen.add(it["id"])
-                    time.sleep(0.4)
+        for region in cfg.get("regions", []):
+            rid = str(region.get("id"))
+            rname = region.get("name", "")
+            # Ưu tiên đồ MIỄN PHÍ trước
+            if cfg.get("free_electronics") and cfg.get("free_first", True):
+                scan_free_region(rid, rname)
+            # Quét MỌI máy trong khoảng giá
+            scan_phones_region(rid, rname)
+            # Nếu không ưu tiên free thì quét free sau
+            if cfg.get("free_electronics") and not cfg.get("free_first", True):
+                scan_free_region(rid, rname)
 
         browser.close()
 

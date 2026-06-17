@@ -88,7 +88,13 @@ DEFAULT_CONFIG = {
         {"keyword": "아이폰 14", "min_price": 150000, "max_price": 550000},
         {"keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000},
     ],
+    # Săn MOI loại máy trong khoảng giá này (không cần thêm từng máy).
+    "phone_min_price": 20000,
+    "phone_max_price": 60000,
+    "phone_keywords": ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
+    "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
     "free_electronics": True,
+    "free_first": True,         # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
     "headless": True,
     "skip_sold": True,
@@ -110,6 +116,9 @@ PRESETS = [
     ("AirPods", "에어팟"), ("Apple Watch", "애플워치"),
 ]
 INTERVALS = [10, 15, 30, 60, 120]
+# Khoảng giá gợi ý nhanh (won): từ, đến
+PRICE_PRESETS = [(0, 30000), (20000, 60000), (50000, 100000),
+                 (100000, 200000), (0, 300000)]
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +222,8 @@ def btn(text: str, data: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def parse_price_input(text: str) -> int | None:
-    """Chấp nhận '700000', '70만', '70만원', '70'."""
-    t = text.replace(",", "").replace(" ", "").replace("원", "").lower()
+    """Chấp nhận '700000', '70만', '70만원', '70', '20.000'."""
+    t = text.replace(",", "").replace(".", "").replace(" ", "").replace("원", "").lower()
     try:
         if "만" in t:
             man = t.replace("만", "")
@@ -224,6 +233,18 @@ def parse_price_input(text: str) -> int | None:
         return val * 10000 if val <= 1000 else val
     except ValueError:
         return None
+
+
+def parse_range_input(text: str) -> tuple[int, int] | None:
+    """Nhận 'TẪ ĐẺN', ví dụ '20000 60000', '2만-6만', '20.000 đến 60.000'."""
+    import re as _re
+    parts = _re.split(r"[^0-9만.원]+", text.strip())
+    nums = [parse_price_input(p) for p in parts if p.strip()]
+    nums = [n for n in nums if n is not None]
+    if len(nums) < 2:
+        return None
+    lo, hi = sorted(nums[:2])
+    return lo, hi
 
 
 def won(v: int) -> str:
@@ -236,9 +257,11 @@ def won(v: int) -> str:
 
 def main_menu_markup(cfg: dict) -> dict:
     free = "BẬT ✅" if cfg.get("free_electronics") else "TẮT ⬜"
+    lo = cfg.get("phone_min_price", 0) or 0
+    hi = cfg.get("phone_max_price", 0) or 0
     return kb([
         [btn("🔍 Quét ngay", "scan")],
-        [btn("💰 Giá & máy săn", "watch")],
+        [btn(f"💰 Giá máy: {won(lo)} → {won(hi)}", "price")],
         [btn(f"🎁 Đồ điện tử miễn phí: {free}", "togglefree")],
         [btn(f"⏱ Tần suất: {cfg.get('scan_interval_minutes')} phút", "interval")],
         [btn("⚙️ Cài đặt lọc", "settings")],
@@ -247,13 +270,16 @@ def main_menu_markup(cfg: dict) -> dict:
 
 
 def main_menu_text(cfg: dict) -> str:
-    n_watch = len(cfg.get("watch", []))
+    lo = cfg.get("phone_min_price", 0) or 0
+    hi = cfg.get("phone_max_price", 0) or 0
     n_region = len(cfg.get("regions", []))
     return (
         "🥕 <b>Daangn Phone Hunter</b>\n\n"
-        f"📱 Đang săn: <b>{n_watch}</b> dòng máy\n"
+        f"📱 Săn MỌI máy giá: <b>{won(lo)} → {won(hi)}</b>\n"
+        f"🎁 Ưu tiên đồ miễn phí: <b>{'bật' if cfg.get('free_electronics') else 'tắt'}</b>\n"
         f"🌍 Khu vực: <b>{n_region}</b>\n"
         f"⏱ Quét mỗi <b>{cfg.get('scan_interval_minutes')}</b> phút\n\n"
+        "Chỉ quét máy còn tốt (loại chập nguồn / ố màn / bể nát).\n"
         "Chọn một mục bên dưới:"
     )
 
@@ -264,6 +290,27 @@ def show_main(chat_id: int, msg_id: int | None = None):
         edit(chat_id, msg_id, main_menu_text(cfg), main_menu_markup(cfg))
     else:
         send(chat_id, main_menu_text(cfg), main_menu_markup(cfg))
+
+
+def price_markup(cfg: dict) -> dict:
+    rows = [[btn("✏️ Nhập khoảng giá (từ – đến)", "setrange")]]
+    for lo, hi in PRICE_PRESETS:
+        rows.append([btn(f"{won(lo)} → {won(hi)}", f"pr:{lo}:{hi}")])
+    rows.append([btn("⬅️ Về menu chính", "home")])
+    return kb(rows)
+
+
+def show_price(chat_id: int, msg_id: int):
+    cfg = load_config()
+    lo = cfg.get("phone_min_price", 0) or 0
+    hi = cfg.get("phone_max_price", 0) or 0
+    txt = (
+        "💰 <b>Giá máy muốn săn</b>\n\n"
+        f"Hiện tại: từ <b>{won(lo)}</b> đến <b>{won(hi)}</b>\n\n"
+        "Bot sẽ tìm MỌI loại máy trong khoảng giá này — không cần thêm từng máy.\n"
+        "Chọn nhanh hoặc bấm “Nhập khoảng giá”:"
+    )
+    edit(chat_id, msg_id, txt, price_markup(cfg))
 
 
 def watch_markup(cfg: dict) -> dict:
@@ -362,9 +409,23 @@ def handle_callback(cb: dict):
     if data == "home":
         answer_cb(cb_id)
         return show_main(chat_id, msg_id)
-    if data == "watch":
+    if data == "price" or data == "watch":
         answer_cb(cb_id)
-        return show_watch(chat_id, msg_id)
+        return show_price(chat_id, msg_id)
+    if data == "setrange":
+        pending[chat_id] = {"action": "setrange", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "✏️ Gửi khoảng giá <b>TẪ ĐẺN</b> (won), ví dụ:\n"
+                             "<b>20000 60000</b>  hoặc  <b>2만 6만</b>")
+    if data.startswith("pr:"):
+        _, lo, hi = data.split(":")
+        with cfg_lock:
+            cfg = load_config()
+            cfg["phone_min_price"] = int(lo)
+            cfg["phone_max_price"] = int(hi)
+            save_config(cfg)
+        answer_cb(cb_id, "Đã đặt khoảng giá")
+        return show_price(chat_id, msg_id)
     if data == "addmenu":
         answer_cb(cb_id)
         return edit(chat_id, msg_id, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", add_menu_markup())
@@ -505,6 +566,19 @@ def handle_message(msg: dict):
         return show_main(chat_id)
 
     action = state["action"]
+    if action == "setrange":
+        rng = parse_range_input(text)
+        if rng is None:
+            return send(chat_id, "⚠️ Chưa hiểu. Gửi 2 số TẪ ĐẺN, ví dụ: <b>20000 60000</b>")
+        lo, hi = rng
+        with cfg_lock:
+            cfg = load_config()
+            cfg["phone_min_price"] = lo
+            cfg["phone_max_price"] = hi
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Đã đặt khoảng giá: từ <b>{won(lo)}</b> đến <b>{won(hi)}</b>.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -546,13 +620,19 @@ def match_phone(item: dict, watch: dict, cfg: dict, cond: dict) -> bool:
         return False
     if cfg.get("skip_broken", True) and cond["broken"]:
         return False
+    # Chi may con tot: loai dau hieu loi nhe (o man / xuoc nhieu) va pin yeu.
+    if cfg.get("strict_good", True):
+        if cond.get("soft_bad"):
+            return False
+        if cond.get("battery") is not None and cond["battery"] < 80:
+            return False
     price = item["price"]
     if price is None:
         return False
     if price < (watch.get("min_price", 0) or 0):
         return False
     mx = watch.get("max_price")
-    if mx is not None and price > mx:
+    if mx is not None and mx > 0 and price > mx:
         return False
     hay = (item["title"] + " " + item["content"]).lower()
     return not any(b and b.lower() in hay for b in cfg.get("exclude_words", []))
@@ -623,22 +703,52 @@ def run_scan(manual_chat: int | None = None):
             )
             page = ctx.new_page()
 
-            for region in cfg.get("regions", []):
-                rid = str(region.get("id"))
-                rname = region.get("name", "")
+            gmin = int(cfg.get("phone_min_price", 0) or 0)
+            gmax = int(cfg.get("phone_max_price", 0) or 0)
+            grange = {"min_price": gmin, "max_price": gmax}
+            kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
 
-                # 1) Điện thoại theo từ khóa
-                for watch in cfg.get("watch", []):
+            def scan_free_region(rid, rname):
+                nonlocal found, ai_budget
+                try:
+                    free_items = scraper.scrape_free(page, rid, rname)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
+                    return
+                for it in free_items:
+                    if it["id"] in processed:
+                        continue
+                    cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
+                    if not match_free(it, cfg, cond):
+                        continue
+                    processed.add(it["id"])
+                    if it["id"] in seen:
+                        continue
+                    vi = None
+                    if ai_on and ai_budget > 0:
+                        vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"), is_free=True)
+                        if vi:
+                            ai_budget -= 1
+                    msg = build_message(it, cond, "나눔", True, vi)
+                    found += 1
+                    for t in targets:
+                        send(t, msg)
+                    seen.add(it["id"])
+                    time.sleep(0.4)
+
+            def scan_phones_region(rid, rname):
+                nonlocal found, ai_budget
+                for kw in kws:
                     try:
-                        items = scraper.scrape_keyword(page, rid, rname, watch["keyword"])
+                        items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax)
                     except Exception as exc:  # noqa: BLE001
-                        print(f"  [Lỗi] {watch['keyword']} @ {rname}: {exc}", file=sys.stderr)
+                        print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                         continue
                     for it in items:
                         if it["id"] in processed:
                             continue
                         cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
-                        if not match_phone(it, watch, cfg, cond):
+                        if not match_phone(it, grange, cfg, cond):
                             continue
                         processed.add(it["id"])
                         if it["id"] in seen:
@@ -648,40 +758,24 @@ def run_scan(manual_chat: int | None = None):
                             vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"))
                             if vi:
                                 ai_budget -= 1
-                        msg = build_message(it, cond, watch["keyword"], False, vi)
+                        msg = build_message(it, cond, kw, False, vi)
                         found += 1
                         for t in targets:
                             send(t, msg)
                         seen.add(it["id"])
                         time.sleep(0.4)
 
-                # 2) Đồ điện tử miễn phí
-                if cfg.get("free_electronics"):
-                    try:
-                        free_items = scraper.scrape_free(page, rid, rname)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
-                        free_items = []
-                    for it in free_items:
-                        if it["id"] in processed:
-                            continue
-                        cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
-                        if not match_free(it, cfg, cond):
-                            continue
-                        processed.add(it["id"])
-                        if it["id"] in seen:
-                            continue
-                        vi = None
-                        if ai_on and ai_budget > 0:
-                            vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"), is_free=True)
-                            if vi:
-                                ai_budget -= 1
-                        msg = build_message(it, cond, "나눔", True, vi)
-                        found += 1
-                        for t in targets:
-                            send(t, msg)
-                        seen.add(it["id"])
-                        time.sleep(0.4)
+            for region in cfg.get("regions", []):
+                rid = str(region.get("id"))
+                rname = region.get("name", "")
+                # Ưu tiên đồ MIỄN PHÍ trước
+                if cfg.get("free_electronics") and cfg.get("free_first", True):
+                    scan_free_region(rid, rname)
+                # Quét MỌI máy trong khoảng giá
+                scan_phones_region(rid, rname)
+                # Nếu không ưu tiên free thì quét free sau
+                if cfg.get("free_electronics") and not cfg.get("free_first", True):
+                    scan_free_region(rid, rname)
 
             browser.close()
 

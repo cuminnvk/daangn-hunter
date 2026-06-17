@@ -35,7 +35,13 @@ const DEFAULT_CONFIG = {
     { keyword: "아이폰 14", min_price: 150000, max_price: 550000 },
     { keyword: "갤럭시 S24", min_price: 200000, max_price: 650000 },
   ],
+  // Săn MỌI loại máy trong khoảng giá này (không cần thêm từng máy).
+  phone_min_price: 20000,
+  phone_max_price: 60000,
+  phone_keywords: ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
+  strict_good: true,
   free_electronics: true,
+  free_first: true,
   scan_interval_minutes: 30,
   skip_sold: true,
   skip_reserved: true,
@@ -55,6 +61,8 @@ const PRESETS = [
   ["AirPods", "에어팟"], ["Apple Watch", "애플워치"],
 ];
 const INTERVALS = [10, 15, 30, 60, 120];
+// Khoảng giá gợi ý nhanh (won): [từ, đến]
+const PRICE_PRESETS = [[0, 30000], [20000, 60000], [50000, 100000], [100000, 200000], [0, 300000]];
 
 // --------------------------------------------------------------------------
 // KV helpers
@@ -125,7 +133,7 @@ const btn = (text, data) => ({ text, callback_data: data });
 // Tiện ích số
 // --------------------------------------------------------------------------
 function parsePrice(text) {
-  let t = text.replace(/,/g, "").replace(/\s/g, "").replace(/원/g, "").toLowerCase();
+  let t = text.replace(/,/g, "").replace(/\./g, "").replace(/\s/g, "").replace(/원/g, "").toLowerCase();
   if (t.includes("만")) {
     const man = t.replace("만", "");
     if (man === "") return null;
@@ -140,6 +148,14 @@ function won(v) {
   const s = v.toLocaleString("en-US");
   return v >= 10000 ? `${s}원 (${Math.floor(v / 10000)}만)` : `${s}원`;
 }
+function parseRange(text) {
+  const parts = text.split(/[^0-9만.원]+/).filter((s) => s.trim());
+  const nums = parts.map(parsePrice).filter((n) => n !== null && !isNaN(n));
+  if (nums.length < 2) return null;
+  const lo = Math.min(nums[0], nums[1]);
+  const hi = Math.max(nums[0], nums[1]);
+  return [lo, hi];
+}
 const esc = (s) =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -148,9 +164,10 @@ const esc = (s) =>
 // --------------------------------------------------------------------------
 function mainMenu(cfg) {
   const free = cfg.free_electronics ? "BẬT ✅" : "TẮT ⬜";
+  const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
   return kb([
     [btn("🔍 Quét ngay", "scan")],
-    [btn("💰 Giá & máy săn", "watch")],
+    [btn(`💰 Giá máy: ${won(lo)} → ${won(hi)}`, "price")],
     [btn(`🎁 Đồ điện tử miễn phí: ${free}`, "togglefree")],
     [btn(`⏱ Tần suất: ${cfg.scan_interval_minutes} phút`, "interval")],
     [btn("⚙️ Cài đặt lọc", "settings")],
@@ -158,12 +175,30 @@ function mainMenu(cfg) {
   ]);
 }
 function mainText(cfg) {
+  const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
   return (
     "🥕 <b>Daangn Phone Hunter</b>\n\n" +
-    `📱 Đang săn: <b>${cfg.watch.length}</b> dòng máy\n` +
+    `📱 Săn MỌI máy giá: <b>${won(lo)} → ${won(hi)}</b>\n` +
+    `🎁 Ưu tiên đồ miễn phí: <b>${cfg.free_electronics ? "bật" : "tắt"}</b>\n` +
     `🌍 Khu vực: <b>${cfg.regions.length}</b>\n` +
     `⏱ Quét mỗi <b>${cfg.scan_interval_minutes}</b> phút\n\n` +
+    "Chỉ quét máy còn tốt (loại chập nguồn / ố màn / bể nát).\n" +
     "Chọn một mục bên dưới:"
+  );
+}
+function priceMenu(cfg) {
+  const rows = [[btn("✏️ Nhập khoảng giá (từ – đến)", "setrange")]];
+  for (const [lo, hi] of PRICE_PRESETS) rows.push([btn(`${won(lo)} → ${won(hi)}`, `pr:${lo}:${hi}`)]);
+  rows.push([btn("⬅️ Về menu chính", "home")]);
+  return kb(rows);
+}
+function priceText(cfg) {
+  const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
+  return (
+    "💰 <b>Giá máy muốn săn</b>\n\n" +
+    `Hiện tại: từ <b>${won(lo)}</b> đến <b>${won(hi)}</b>\n\n` +
+    "Bot sẽ tìm MỌI loại máy trong khoảng giá này — không cần thêm từng máy.\n" +
+    "Chọn nhanh hoặc bấm “Nhập khoảng giá”:"
   );
 }
 function watchMenu(cfg) {
@@ -269,7 +304,20 @@ async function handleCallback(env, cb) {
   const cfg = await getConfig(env);
 
   if (data === "home") { await answer(env, cb.id); return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg)); }
-  if (data === "watch") { await answer(env, cb.id); return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:", watchMenu(cfg)); }
+  if (data === "price" || data === "watch") { await answer(env, cb.id); return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg)); }
+  if (data === "setrange") {
+    await setPending(env, chatId, { action: "setrange" });
+    await answer(env, cb.id);
+    return send(env, chatId, "✏️ Gửi khoảng giá <b>TẪ ĐẺN</b> (won), ví dụ:\n<b>20000 60000</b>  hoặc  <b>2만 6만</b>");
+  }
+  if (data.startsWith("pr:")) {
+    const [, lo, hi] = data.split(":");
+    cfg.phone_min_price = parseInt(lo, 10);
+    cfg.phone_max_price = parseInt(hi, 10);
+    await saveConfig(env, cfg);
+    await answer(env, cb.id, "Đã đặt khoảng giá");
+    return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
+  }
   if (data === "addmenu") { await answer(env, cb.id); return edit(env, chatId, msgId, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", addMenu()); }
   if (data === "settings") { await answer(env, cb.id); return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg)); }
   if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
@@ -392,6 +440,16 @@ async function handleMessage(env, msg) {
   }
 
   const cfg = await getConfig(env);
+  if (state.action === "setrange") {
+    const rng = parseRange(text);
+    if (!rng) return send(env, chatId, "⚠️ Chưa hiểu. Gửi 2 số TẪ ĐẺN, ví dụ: <b>20000 60000</b>");
+    cfg.phone_min_price = rng[0];
+    cfg.phone_max_price = rng[1];
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Đã đặt khoảng giá: từ <b>${won(rng[0])}</b> đến <b>${won(rng[1])}</b>.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
   if (state.action === "setmax" || state.action === "setmin") {
     const price = parsePrice(text);
     if (price === null) return send(env, chatId, "⚠️ Không hiểu giá. Gửi lại số (vd 700000 hoặc 70만):");

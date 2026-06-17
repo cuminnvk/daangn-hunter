@@ -253,8 +253,6 @@ def main() -> int:
                         vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"))
                         if vi:
                             ai_budget -= 1
-                        if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):
-                            continue
                     msg = bot.build_message(it, cond, kw, False, vi)
                     found += 1
                     phone_count += 1

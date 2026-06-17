@@ -212,7 +212,7 @@ function priceText(cfg) {
   return (
     "💰 <b>Giá máy muốn săn</b>\n\n" +
     `Hiện tại: từ <b>${won(lo)}</b> đến <b>${won(hi)}</b>\n\n` +
-    "Bot sẽ tìm MỌI loại máy trong khoảng giá này — không cần thêm từng máy.\n" +
+    "Bot chỉ dùng khoảng giá này để săn MỌI điện thoại. Danh sách máy riêng không còn được dùng.\n" +
     "Chọn nhanh hoặc bấm “Nhập khoảng giá”:"
   );
 }
@@ -401,7 +401,10 @@ async function handleCallback(env, cb) {
     await answer(env, cb.id, "Đã đặt khoảng giá");
     return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
   }
-  if (data === "addmenu") { await answer(env, cb.id); return edit(env, chatId, msgId, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", addMenu()); }
+  if (data === "addmenu") {
+    await answer(env, cb.id, "Bot đang săn mọi máy theo khoảng giá");
+    return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
+  }
   if (data === "settings") { await answer(env, cb.id); return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg)); }
   if (data === "setlimit") {
     await setPending(env, chatId, { action: "setlimit" });
@@ -499,51 +502,14 @@ async function handleCallback(env, cb) {
     return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg));
   }
 
-  if (data.startsWith("w:")) {
-    const idx = parseInt(data.split(":")[1], 10);
-    const w = cfg.watch[idx];
-    await answer(env, cb.id);
-    if (!w) return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>", watchMenu(cfg));
-    const txt =
-      `📱 <b>${esc(w.keyword)}</b>\n\n` +
-      `Giá tối thiểu: ${w.min_price ? won(w.min_price) : "không đặt"}\n` +
-      `Giá tối đa: ${w.max_price ? won(w.max_price) : "không đặt"}`;
-    return edit(env, chatId, msgId, txt, watchDetail(idx));
-  }
-
-  if (data.startsWith("del:")) {
-    const idx = parseInt(data.split(":")[1], 10);
-    const removed = cfg.watch.splice(idx, 1)[0];
-    await saveConfig(env, cfg);
-    await answer(env, cb.id, removed ? `Đã xóa ${removed.keyword}` : "");
-    return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:", watchMenu(cfg));
-  }
-
-  if (data.startsWith("setmax:") || data.startsWith("setmin:")) {
-    const idx = parseInt(data.split(":")[1], 10);
-    const kind = data.startsWith("setmax") ? "max" : "min";
-    await setPending(env, chatId, { action: "set" + kind, idx });
-    await answer(env, cb.id);
-    return send(env, chatId, `💵 Gửi mức giá ${kind} (ví dụ: <b>700000</b> hoặc <b>70만</b>):`);
-  }
-
-  if (data.startsWith("add:")) {
-    const i = parseInt(data.split(":")[1], 10);
-    const kwd = PRESETS[i][1];
-    if (cfg.watch.some((w) => w.keyword === kwd)) {
-      await answer(env, cb.id, "Đã có rồi");
-    } else {
-      cfg.watch.push({ keyword: kwd, min_price: 0, max_price: 700000 });
-      await saveConfig(env, cfg);
-      await answer(env, cb.id, `Đã thêm ${kwd}`);
-    }
-    return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:", watchMenu(cfg));
-  }
-
-  if (data === "addcustom") {
-    await setPending(env, chatId, { action: "addkw" });
-    await answer(env, cb.id);
-    return send(env, chatId, "⌨️ Gõ tên máy (tiếng Hàn tốt nhất, vd <b>아이폰 13 미니</b>). Gõ tiếng Việt thì AI sẽ tự chuyển.");
+  if (
+    data === "addmenu" || data === "addcustom" ||
+    data.startsWith("w:") || data.startsWith("del:") ||
+    data.startsWith("setmax:") || data.startsWith("setmin:") ||
+    data.startsWith("add:")
+  ) {
+    await answer(env, cb.id, "Bot đang săn mọi máy theo khoảng giá");
+    return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
   }
 
   await answer(env, cb.id);
@@ -651,30 +617,15 @@ async function handleMessage(env, msg) {
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (state.action === "setmax" || state.action === "setmin") {
-    const price = parsePrice(text);
-    if (price === null) return send(env, chatId, "⚠️ Không hiểu giá. Gửi lại số (vd 700000 hoặc 70만):");
-    const w = cfg.watch[state.idx];
-    if (w) {
-      if (state.action === "setmax") w.max_price = price;
-      else w.min_price = price;
-      await saveConfig(env, cfg);
-    }
     await clearPending(env, chatId);
-    await send(env, chatId, `✅ Đã đặt giá ${won(price)}.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+    await send(env, chatId, "⚠️ Bot hiện săn mọi máy theo <b>khoảng giá chung</b>, không đặt giá từng model nữa.");
+    return send(env, chatId, priceText(cfg), priceMenu(cfg));
   }
 
   if (state.action === "addkw") {
-    const kwd = await viToKorean(env, text);
-    if (cfg.watch.some((w) => w.keyword === kwd)) {
-      await send(env, chatId, "Máy này đã có trong danh sách.");
-    } else {
-      cfg.watch.push({ keyword: kwd, min_price: 0, max_price: 700000 });
-      await saveConfig(env, cfg);
-      await send(env, chatId, `✅ Đã thêm: <b>${esc(kwd)}</b> (giá tối đa 70만, sửa trong menu).`);
-    }
     await clearPending(env, chatId);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+    await send(env, chatId, "⚠️ Bot hiện săn mọi điện thoại theo <b>khoảng giá chung</b>, không thêm từng model nữa.");
+    return send(env, chatId, priceText(cfg), priceMenu(cfg));
   }
 }
 

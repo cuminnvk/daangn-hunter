@@ -135,6 +135,8 @@ def main() -> int:
     seen_ttl = int(cfg.get("seen_ttl_hours", 48) or 48)
     send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
     digest_mode = bool(cfg.get("digest_mode", False))
+    nationwide = bool(cfg.get("nationwide", True))
+    max_age_hours = int(cfg.get("listing_max_age_hours", 24) or 24)
     processed: set[str] = set()
     digests: dict[int, list[str]] = {t: [] for t in targets}
 
@@ -180,6 +182,8 @@ def main() -> int:
                     continue
                 if not bot.pass_region_filter(it, cfg):
                     continue
+                if not scraper.is_fresh(it, max_age_hours):
+                    continue
                 cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
                 if not bot.match_free(it, cfg, cond):
                     continue
@@ -215,6 +219,8 @@ def main() -> int:
                         continue
                     if not bot.pass_region_filter(it, cfg):
                         continue
+                    if not scraper.is_fresh(it, max_age_hours):
+                        continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
                         if scraper.clearly_not_phone(it["title"], it["content"]):
@@ -240,21 +246,25 @@ def main() -> int:
                     dispatch_item(msg)
                     bot.mark_seen(seen, it["id"])
 
-        for region in cfg.get("regions", []):
-            done_free = (not free_limit) or free_count >= free_limit
-            done_phone = (not phone_limit) or phone_count >= phone_limit
-            if done_free and done_phone:
-                break
-            rid = str(region.get("id"))
-            rname = region.get("name", "")
-            # Ưu tiên đồ MIỄN PHÍ trước
+        if nationwide:
             if cfg.get("free_electronics") and cfg.get("free_first", True):
-                scan_free_region(rid, rname)
-            # Quét điện thoại trong khoảng giá
-            scan_phones_region(rid, rname)
-            # Nếu không ưu tiên free thì quét free sau
+                scan_free_region(None, "전국")
+            scan_phones_region(None, "전국")
             if cfg.get("free_electronics") and not cfg.get("free_first", True):
-                scan_free_region(rid, rname)
+                scan_free_region(None, "전국")
+        else:
+            for region in cfg.get("regions", []):
+                done_free = (not free_limit) or free_count >= free_limit
+                done_phone = (not phone_limit) or phone_count >= phone_limit
+                if done_free and done_phone:
+                    break
+                rid = str(region.get("id"))
+                rname = region.get("name", "")
+                if cfg.get("free_electronics") and cfg.get("free_first", True):
+                    scan_free_region(rid, rname)
+                scan_phones_region(rid, rname)
+                if cfg.get("free_electronics") and not cfg.get("free_first", True):
+                    scan_free_region(rid, rname)
 
         browser.close()
 

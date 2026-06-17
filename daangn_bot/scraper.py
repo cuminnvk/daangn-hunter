@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import re
+import time
+from datetime import datetime
 from urllib.parse import quote
 
 SEARCH_PAGE = "https://www.daangn.com/kr/buy-sell/s/"
@@ -135,6 +137,30 @@ def is_electronics(title: str, content: str = "") -> bool:
     return any(w in low for w in FREE_DEVICE_WORDS)
 
 
+def _parse_ts(ts_str) -> float | None:
+    """Chuyển ISO 8601 hoặc unix timestamp thành float. Trả None nếu lỗi."""
+    if not ts_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        pass
+    try:
+        return float(ts_str)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_fresh(item: dict, max_age_hours: int = 24) -> bool:
+    """True nếu tin đăng trong vòng max_age_hours giờ.
+    Nếu không có timestamp thì cho qua (đừng chặn nhầm)."""
+    ts = item.get("published_at")
+    if ts is None:
+        return True
+    return (time.time() - ts) <= max_age_hours * 3600
+
+
 def analyze_condition(text: str) -> dict:
     low = text.lower()
     battery = None
@@ -224,6 +250,7 @@ def _parse_articles(articles: list, fallback_region: str) -> list[dict]:
         m = ITEM_ID_RE.search(a.get("id") or href)
         if not m:
             continue
+        ts_raw = a.get("publishedAt") or a.get("createdAt") or a.get("writtenAt") or ""
         results.append(
             {
                 "id": m.group(1),
@@ -234,6 +261,7 @@ def _parse_articles(articles: list, fallback_region: str) -> list[dict]:
                 "region": region_label(a.get("region") or {}) or fallback_region,
                 "seller": ((a.get("user") or {}).get("nickname") or "").strip(),
                 "link": href if href.startswith("http") else f"https://www.daangn.com{href}",
+                "published_at": _parse_ts(ts_raw),
             }
         )
     return results
@@ -265,24 +293,30 @@ def _fetch(page, url: str) -> list[dict]:
     return captured[-1].get("fleamarketArticles", []) or []
 
 
-def scrape_keyword(page, region_id: str, region_name: str, keyword: str,
+def scrape_keyword(page, region_id: str | None, region_name: str | None, keyword: str,
                    min_price: int | None = None, max_price: int | None = None) -> list[dict]:
-    url = (
-        f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
-        f"&search={quote(keyword)}"
-    )
+    if region_id and region_name:
+        url = (
+            f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
+            f"&search={quote(keyword)}"
+        )
+    else:
+        url = f"{SEARCH_PAGE}?search={quote(keyword)}"
     if min_price is not None or max_price is not None:
         lo = int(min_price) if min_price else 0
         hi = int(max_price) if max_price else 0
         url += f"&price={lo}__{hi}"
-    return _parse_articles(_fetch(page, url), region_name)
+    return _parse_articles(_fetch(page, url), region_name or "전국")
 
 
-def scrape_free(page, region_id: str, region_name: str) -> list[dict]:
+def scrape_free(page, region_id: str | None, region_name: str | None) -> list[dict]:
     """Lấy đồ MIỄN PHÍ (price=0__0) rồi lọc đồ điện tử."""
-    url = (
-        f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
-        f"&price=0__0"
-    )
-    items = _parse_articles(_fetch(page, url), region_name)
+    if region_id and region_name:
+        url = (
+            f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
+            f"&price=0__0"
+        )
+    else:
+        url = f"{SEARCH_PAGE}?price=0__0"
+    items = _parse_articles(_fetch(page, url), region_name or "전국")
     return [it for it in items if is_electronics(it["title"], it["content"])]

@@ -2,7 +2,7 @@ name: Daangn Phone Hunter
 
 on:
   schedule:
-    - cron: "*/30 * * * *" # tự quét mỗi 30 phút
+    - cron: "*/5 * * * *" # chạy mỗi 5 phút, scan_once tự quyết định có quét theo config
   workflow_dispatch: {} # bấm chạy thủ công
   repository_dispatch:
     types: [scan] # nút "Quét ngay" trên bot (Cloudflare Worker) kích hoạt
@@ -41,6 +41,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
           WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
+          FORCE_SCAN: ${{ github.event_name != 'schedule' && '1' || '0' }}
         run: python scan_once.py
 
       - name: Báo Worker đã quét xong (tùy chọn)
@@ -56,8 +57,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain daangn_bot/seen.json)" ]; then
-            git add daangn_bot/seen.json
+          if [ -n "$(git status --porcelain daangn_bot/seen.json daangn_bot/last_run.json)" ]; then
+            git add daangn_bot/seen.json daangn_bot/last_run.json
             git commit -m "chore: update seen state [skip ci]"
             git push
           else

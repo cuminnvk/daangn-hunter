@@ -15,6 +15,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -97,6 +98,7 @@ DEFAULT_CONFIG = {
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
     "free_limit": 20,           # số tin đồ free tối đa mỗi lượt quét
     "phone_limit": 20,          # số tin điện thoại tối đa mỗi lượt quét
+    "send_delay_seconds": 10,   # giãn cách gửi từng tin để tránh lỗi
     "free_electronics": True,
     "free_first": True,         # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
@@ -255,6 +257,32 @@ def won(v: int) -> str:
     return f"{v:,}원 ({v // 10000}만)" if v >= 10000 else f"{v:,}원"
 
 
+def fallback_title_vi(title: str) -> str:
+    """Dịch nhanh tiêu đề Hàn -> Việt khi AI lỗi hoặc hết lượt."""
+    t = (title or "").strip()
+    if not t:
+        return "Sản phẩm"
+    rep = {
+        "아이폰": "iPhone",
+        "갤럭시": "Galaxy",
+        "스마트폰": "điện thoại thông minh",
+        "휴대폰": "điện thoại",
+        "핸드폰": "điện thoại",
+        "자급제": "bản quốc tế",
+        "공기계": "máy trần",
+        "미개봉": "chưa bóc seal",
+        "미사용": "chưa sử dụng",
+        "풀박스": "đủ hộp phụ kiện",
+        "배터리": "pin",
+        "효율": "hiệu suất",
+        "무잔상": "không ám màn",
+        "잔상": "ám màn",
+    }
+    for k, v in rep.items():
+        t = t.replace(k, v)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 # ---------------------------------------------------------------------------
 # MENU
 # ---------------------------------------------------------------------------
@@ -386,6 +414,7 @@ def settings_markup(cfg: dict) -> dict:
         return "✅" if v else "⬜"
     fl = cfg.get("free_limit", 20)
     pl = cfg.get("phone_limit", 20)
+    sd = int(cfg.get("send_delay_seconds", 10) or 0)
     return kb([
         [btn(f"{mark(cfg.get('phones_only', True))} Chỉ điện thoại (loại vỏ/ốp)", "t:phones_only")],
         [btn(f"{mark(cfg.get('strict_good', True))} Chỉ máy còn tốt (nghiêm ngặt)", "t:strict_good")],
@@ -394,6 +423,7 @@ def settings_markup(cfg: dict) -> dict:
         [btn(f"{mark(cfg.get('skip_reserved'))} Bỏ tin đang giữ chỗ", "t:skip_reserved")],
         [btn(f"{mark(cfg.get('use_ai'))} AI dịch & phân tích (Groq)", "t:use_ai")],
         [btn(f"🔢 Giới hạn: {fl} free / {pl} máy / lượt", "setlimit")],
+        [btn(f"⏳ Giãn gửi: {sd}s / tin", "setdelay")],
         [btn("⬅️ Về menu chính", "home")],
     ])
 
@@ -484,6 +514,11 @@ def handle_callback(cb: dict):
         answer_cb(cb_id)
         return send(chat_id, "🔢 Gửi giới hạn <b>FREE MÁY</b> mỗi lượt (2 số), ví dụ:\n"
                              "<b>20 20</b>  (20 đồ free + 20 điện thoại)")
+
+    if data == "setdelay":
+        pending[chat_id] = {"action": "setdelay", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "⏳ Gửi số giây giãn cách mỗi tin, ví dụ <b>10</b>")
 
     if data.startswith("int:"):
         m = int(data.split(":")[1])
@@ -613,6 +648,18 @@ def handle_message(msg: dict):
         pending.pop(chat_id, None)
         send(chat_id, f"✅ Mỗi lượt quét tối đa: <b>{nums[0]}</b> đồ free + <b>{nums[1]}</b> điện thoại.")
         return show_main(chat_id)
+    if action == "setdelay":
+        nums = [int(n) for n in re.findall(r"\d+", text)]
+        if not nums:
+            return send(chat_id, "⚠️ Gửi số giây hợp lệ, ví dụ <b>10</b>")
+        delay = max(0, min(30, nums[0]))
+        with cfg_lock:
+            cfg = load_config()
+            cfg["send_delay_seconds"] = delay
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Đã đặt giãn gửi: <b>{delay}</b> giây/tin.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -685,7 +732,7 @@ def match_free(item: dict, cfg: dict, cond: dict) -> bool:
 
 def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict | None) -> str:
     esc = html.escape
-    ten = (vi or {}).get("ten") or item["title"]
+    ten = (vi or {}).get("ten") or fallback_title_vi(item["title"])
     head = "🎁 <b>[MIỄN PHÍ]</b> " if is_free else "📱 "
     lines = [f"{head}<b>{esc(ten)}</b>"]
     if not is_free:
@@ -730,6 +777,7 @@ def run_scan(manual_chat: int | None = None):
         phone_count = 0
         free_limit = int(cfg.get("free_limit", 20) or 0)
         phone_limit = int(cfg.get("phone_limit", 20) or 0)
+        send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
         stopped = False
         processed: set[str] = set()
 
@@ -781,7 +829,8 @@ def run_scan(manual_chat: int | None = None):
                     for t in targets:
                         send(t, msg)
                     seen.add(it["id"])
-                    time.sleep(0.4)
+                    if send_delay > 0:
+                        time.sleep(send_delay)
 
             def scan_phones_region(rid, rname):
                 nonlocal found, ai_budget, phone_count, stopped
@@ -803,6 +852,8 @@ def run_scan(manual_chat: int | None = None):
                             continue
                         # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                         if cfg.get("phones_only", True):
+                            if scraper.clearly_not_phone(it["title"], it["content"]):
+                                continue
                             if scraper.is_accessory(it["title"], it["content"]):
                                 continue
                             if not scraper.looks_like_phone(it["title"], it["content"]):
@@ -827,7 +878,8 @@ def run_scan(manual_chat: int | None = None):
                         for t in targets:
                             send(t, msg)
                         seen.add(it["id"])
-                        time.sleep(0.4)
+                        if send_delay > 0:
+                            time.sleep(send_delay)
 
             for region in cfg.get("regions", []):
                 if stopped or cancel_scan.is_set():

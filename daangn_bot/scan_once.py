@@ -38,6 +38,23 @@ for _stream in (sys.stdout, sys.stderr):
 BASE_DIR = Path(__file__).resolve().parent
 WORKER_URL = os.environ.get("WORKER_URL", "").strip().rstrip("/")
 WORKER_SECRET = os.environ.get("WORKER_SECRET", "").strip()
+LAST_RUN_PATH = BASE_DIR / "last_run.json"
+FORCE_SCAN = os.environ.get("FORCE_SCAN", "0").strip() == "1"
+
+
+def load_last_run_ts() -> float:
+    try:
+        data = json.loads(LAST_RUN_PATH.read_text(encoding="utf-8"))
+        return float(data.get("last_run_ts", 0))
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return 0.0
+
+
+def save_last_run_ts(ts: float) -> None:
+    LAST_RUN_PATH.write_text(
+        json.dumps({"last_run_ts": ts}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def fetch_remote_state() -> tuple[dict | None, list[int] | None]:
@@ -87,6 +104,15 @@ def main() -> int:
     STATE = fetch_remote_state()
 
     cfg = resolve_config()
+    interval_s = max(5, int(cfg.get("scan_interval_minutes", 30))) * 60
+    if not FORCE_SCAN:
+        last_ts = load_last_run_ts()
+        now = time.time()
+        if last_ts > 0 and (now - last_ts) < interval_s:
+            left = int(interval_s - (now - last_ts))
+            print(f"[Skip] Chưa đến kỳ quét theo cài đặt ({left}s nữa).")
+            return 0
+
     targets = resolve_subscribers()
     if not targets:
         print("[Quét] Chưa có người nhận (đặt TELEGRAM_CHAT_ID hoặc /start trên bot).")
@@ -100,6 +126,7 @@ def main() -> int:
     phone_count = 0
     free_limit = int(cfg.get("free_limit", 20) or 0)
     phone_limit = int(cfg.get("phone_limit", 20) or 0)
+    send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
     processed: set[str] = set()
 
     with sync_playwright() as p:
@@ -147,7 +174,8 @@ def main() -> int:
                 for t in targets:
                     bot.send(t, msg)
                 seen.add(it["id"])
-                time.sleep(0.4)
+                if send_delay > 0:
+                    time.sleep(send_delay)
 
         def scan_phones_region(rid, rname):
             nonlocal found, ai_budget, phone_count
@@ -166,6 +194,8 @@ def main() -> int:
                         continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
+                        if scraper.clearly_not_phone(it["title"], it["content"]):
+                            continue
                         if scraper.is_accessory(it["title"], it["content"]):
                             continue
                         if not scraper.looks_like_phone(it["title"], it["content"]):
@@ -189,7 +219,8 @@ def main() -> int:
                     for t in targets:
                         bot.send(t, msg)
                     seen.add(it["id"])
-                    time.sleep(0.4)
+                    if send_delay > 0:
+                        time.sleep(send_delay)
 
         for region in cfg.get("regions", []):
             done_free = (not free_limit) or free_count >= free_limit
@@ -210,6 +241,7 @@ def main() -> int:
         browser.close()
 
     bot.save_seen(seen)
+    save_last_run_ts(time.time())
     print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")
     return 0
 

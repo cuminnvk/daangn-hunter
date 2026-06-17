@@ -56,6 +56,15 @@ PHONE_WORDS = [
     "픽셀", "pixel", "샤오미", "홍미", "공기계", "자급제", "갤럭",
 ]
 
+# Nhóm từ khóa cho tin KHÔNG phải điện thoại (quần áo, giày, túi...).
+NON_PHONE_WORDS = [
+    "의류", "옷", "티셔츠", "반팔", "긴팔", "맨투맨", "후드", "니트", "가디건",
+    "자켓", "재킷", "코트", "패딩", "원피스", "치마", "스커트", "바지", "청바지",
+    "트레이닝", "잠옷", "신발", "운동화", "구두", "슬리퍼", "가방", "백팩",
+    "지갑", "모자", "목도리", "장갑", "귀걸이", "목걸이", "팔찌", "반지",
+    "향수", "화장품", "립스틱", "스킨", "로션",
+]
+
 
 def is_accessory(title: str, content: str = "") -> bool:
     """True nếu tin rao là PHỤ KIỆN (vỏ, ốp, cáp, sạc, kính cường lực...)."""
@@ -67,6 +76,12 @@ def looks_like_phone(title: str, content: str = "") -> bool:
     """True nếu tin rao đúng là một chiếc điện thoại."""
     low = (title + " " + content).lower()
     return any(w in low for w in PHONE_WORDS)
+
+
+def clearly_not_phone(title: str, content: str = "") -> bool:
+    """True nếu nội dung nghiêng rõ ràng về mặt hàng thời trang/mỹ phẩm."""
+    low = (title + " " + content).lower()
+    return any(w in low for w in NON_PHONE_WORDS)
 
 # ---------------------------------------------------------------------------
 # Phân tích tình trạng máy

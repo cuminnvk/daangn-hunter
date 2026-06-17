@@ -40,6 +40,7 @@ const DEFAULT_CONFIG = {
   phone_max_price: 60000,
   phone_keywords: ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
   strict_good: true,
+  min_battery_percent: 80,
   phones_only: true,
   free_limit: 20,
   phone_limit: 20,
@@ -245,6 +246,7 @@ function settingsMenu(cfg) {
   const m = (v) => (v ? "✅" : "⬜");
   const fl = cfg.free_limit ?? 20, pl = cfg.phone_limit ?? 20;
   const sd = cfg.send_delay_seconds ?? 10;
+  const mb = cfg.min_battery_percent ?? 80;
   return kb([
     [btn(`${m(cfg.phones_only !== false)} Chỉ điện thoại (loại vỏ/ốp)`, "t:phones_only")],
     [btn(`${m(cfg.strict_good !== false)} Chỉ máy còn tốt (nghiêm ngặt)`, "t:strict_good")],
@@ -252,6 +254,7 @@ function settingsMenu(cfg) {
     [btn(`${m(cfg.skip_sold)} Bỏ tin đã bán`, "t:skip_sold")],
     [btn(`${m(cfg.skip_reserved)} Bỏ tin đang giữ chỗ`, "t:skip_reserved")],
     [btn(`${m(cfg.use_ai)} AI dịch & phân tích (Groq)`, "t:use_ai")],
+    [btn(`🔋 Pin tối thiểu: ${mb}%`, "setbattery")],
     [btn(`🔢 Giới hạn: ${fl} free / ${pl} máy / lượt`, "setlimit")],
     [btn(`⏳ Giãn gửi: ${sd}s / tin`, "setdelay")],
     [btn("⬅️ Về menu chính", "home")],
@@ -375,6 +378,11 @@ async function handleCallback(env, cb) {
     await setPending(env, chatId, { action: "setdelay" });
     await answer(env, cb.id);
     return send(env, chatId, "⏳ Gửi số giây giãn cách mỗi tin, ví dụ: <b>10</b>");
+  }
+  if (data === "setbattery") {
+    await setPending(env, chatId, { action: "setbattery" });
+    await answer(env, cb.id);
+    return send(env, chatId, "🔋 Gửi ngưỡng pin tối thiểu (%), ví dụ: <b>80</b>");
   }
   if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
 
@@ -532,6 +540,15 @@ async function handleMessage(env, msg) {
     await saveConfig(env, cfg);
     await clearPending(env, chatId);
     await send(env, chatId, `✅ Đã đặt giãn gửi: <b>${cfg.send_delay_seconds}</b> giây/tin.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (state.action === "setbattery") {
+    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
+    if (nums.length < 1) return send(env, chatId, "⚠️ Gửi % pin hợp lệ, ví dụ <b>80</b>");
+    cfg.min_battery_percent = Math.max(50, Math.min(100, nums[0]));
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Đã đặt pin tối thiểu: <b>${cfg.min_battery_percent}%</b>.`);
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (state.action === "setmax" || state.action === "setmin") {

@@ -95,6 +95,7 @@ DEFAULT_CONFIG = {
     "phone_max_price": 60000,
     "phone_keywords": ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
     "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
+    "min_battery_percent": 80,  # pin tối thiểu nếu bật strict_good
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
     "free_limit": 20,           # số tin đồ free tối đa mỗi lượt quét
     "phone_limit": 20,          # số tin điện thoại tối đa mỗi lượt quét
@@ -283,6 +284,26 @@ def fallback_title_vi(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def deal_badge(title: str, price: int | None, is_free: bool) -> str | None:
+    """Ước lượng nhanh deal hời theo model phổ biến."""
+    if is_free:
+        return "🔥 SIÊU HỜI: miễn phí"
+    if price is None:
+        return None
+    t = (title or "").lower()
+    if "아이폰 15" in t and price <= 400000:
+        return "🔥 GIÁ HỜI (iPhone 15)"
+    if "아이폰 14" in t and price <= 300000:
+        return "🔥 GIÁ HỜI (iPhone 14)"
+    if "아이폰 13" in t and price <= 220000:
+        return "🔥 GIÁ HỜI (iPhone 13)"
+    if "갤럭시 s24" in t and price <= 350000:
+        return "🔥 GIÁ HỜI (Galaxy S24)"
+    if "갤럭시 s23" in t and price <= 250000:
+        return "🔥 GIÁ HỜI (Galaxy S23)"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # MENU
 # ---------------------------------------------------------------------------
@@ -415,6 +436,7 @@ def settings_markup(cfg: dict) -> dict:
     fl = cfg.get("free_limit", 20)
     pl = cfg.get("phone_limit", 20)
     sd = int(cfg.get("send_delay_seconds", 10) or 0)
+    mb = int(cfg.get("min_battery_percent", 80) or 0)
     return kb([
         [btn(f"{mark(cfg.get('phones_only', True))} Chỉ điện thoại (loại vỏ/ốp)", "t:phones_only")],
         [btn(f"{mark(cfg.get('strict_good', True))} Chỉ máy còn tốt (nghiêm ngặt)", "t:strict_good")],
@@ -422,6 +444,7 @@ def settings_markup(cfg: dict) -> dict:
         [btn(f"{mark(cfg.get('skip_sold'))} Bỏ tin đã bán", "t:skip_sold")],
         [btn(f"{mark(cfg.get('skip_reserved'))} Bỏ tin đang giữ chỗ", "t:skip_reserved")],
         [btn(f"{mark(cfg.get('use_ai'))} AI dịch & phân tích (Groq)", "t:use_ai")],
+        [btn(f"🔋 Pin tối thiểu: {mb}%", "setbattery")],
         [btn(f"🔢 Giới hạn: {fl} free / {pl} máy / lượt", "setlimit")],
         [btn(f"⏳ Giãn gửi: {sd}s / tin", "setdelay")],
         [btn("⬅️ Về menu chính", "home")],
@@ -519,6 +542,11 @@ def handle_callback(cb: dict):
         pending[chat_id] = {"action": "setdelay", "msg_id": msg_id}
         answer_cb(cb_id)
         return send(chat_id, "⏳ Gửi số giây giãn cách mỗi tin, ví dụ <b>10</b>")
+
+    if data == "setbattery":
+        pending[chat_id] = {"action": "setbattery", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "🔋 Gửi ngưỡng pin tối thiểu (%), ví dụ <b>80</b>")
 
     if data.startswith("int:"):
         m = int(data.split(":")[1])
@@ -660,6 +688,18 @@ def handle_message(msg: dict):
         pending.pop(chat_id, None)
         send(chat_id, f"✅ Đã đặt giãn gửi: <b>{delay}</b> giây/tin.")
         return show_main(chat_id)
+    if action == "setbattery":
+        nums = [int(n) for n in re.findall(r"\d+", text)]
+        if not nums:
+            return send(chat_id, "⚠️ Gửi % pin hợp lệ, ví dụ <b>80</b>")
+        pin = max(50, min(100, nums[0]))
+        with cfg_lock:
+            cfg = load_config()
+            cfg["min_battery_percent"] = pin
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Đã đặt ngưỡng pin tối thiểu: <b>{pin}%</b>.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -705,7 +745,8 @@ def match_phone(item: dict, watch: dict, cfg: dict, cond: dict) -> bool:
     if cfg.get("strict_good", True):
         if cond.get("soft_bad"):
             return False
-        if cond.get("battery") is not None and cond["battery"] < 80:
+        min_bat = int(cfg.get("min_battery_percent", 80) or 0)
+        if cond.get("battery") is not None and cond["battery"] < min_bat:
             return False
     price = item["price"]
     if price is None:
@@ -739,6 +780,9 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
         lines.append(f"💰 {item['price']:,}원")
     else:
         lines.append("💰 Miễn phí (đồ cho tặng)")
+    hot = deal_badge(item.get("title", ""), item.get("price"), is_free)
+    if hot:
+        lines.append(hot)
     lines.append(f"📍 {esc(item['region'])}")
     if cond["battery"] is not None:
         lines.append(f"🔋 Pin: {cond['battery']}%")

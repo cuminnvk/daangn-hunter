@@ -91,17 +91,16 @@ DEFAULT_CONFIG = {
         {"keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000},
     ],
     # Săn MOI loại máy trong khoảng giá này (không cần thêm từng máy).
-    "phone_min_price": 0,
+    "phone_min_price": 20000,
     "phone_max_price": 60000,
-    "phone_keywords": ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
+    "phone_keywords": ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
     "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
-    "min_battery_percent": 70,  # pin tối thiểu nếu bật strict_good
+    "min_battery_percent": 80,  # pin tối thiểu nếu bật strict_good
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
-    "free_limit": 10,           # số tin đồ free tối đa mỗi lượt quét
-    "phone_limit": 50,          # số tin điện thoại tối đa mỗi lượt quét
-    "send_delay_seconds": 2,    # giãn cách gửi từng tin để tránh lỗi
+    "free_limit": 20,           # số tin đồ free tối đa mỗi lượt quét
+    "phone_limit": 20,          # số tin điện thoại tối đa mỗi lượt quét
+    "send_delay_seconds": 10,   # giãn cách gửi từng tin để tránh lỗi
     "digest_mode": False,       # gộp nhiều tin thành vài bản tin lớn
-    "send_scan_summary": True,  # báo tổng kết khi quét xong, kể cả 0 tin
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
     "quiet_end_hour": 7,
@@ -471,7 +470,7 @@ def show_price(chat_id: int, msg_id: int):
     txt = (
         "💰 <b>Giá máy muốn săn</b>\n\n"
         f"Hiện tại: từ <b>{won(lo)}</b> đến <b>{won(hi)}</b>\n\n"
-        "Bot chỉ dùng khoảng giá này để săn MỌI điện thoại. Danh sách máy riêng không còn được dùng.\n"
+        "Bot sẽ tìm MỌI loại máy trong khoảng giá này — không cần thêm từng máy.\n"
         "Chọn nhanh hoặc bấm “Nhập khoảng giá”:"
     )
     edit(chat_id, msg_id, txt, price_markup(cfg))
@@ -613,8 +612,8 @@ def handle_callback(cb: dict):
         answer_cb(cb_id, "Đã đặt khoảng giá")
         return show_price(chat_id, msg_id)
     if data == "addmenu":
-        answer_cb(cb_id, "Bot đang săn mọi máy theo khoảng giá")
-        return show_price(chat_id, msg_id)
+        answer_cb(cb_id)
+        return edit(chat_id, msg_id, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", add_menu_markup())
     if data == "settings":
         answer_cb(cb_id)
         return show_settings(chat_id, msg_id)
@@ -705,12 +704,45 @@ def handle_callback(cb: dict):
         answer_cb(cb_id, "Đã đổi")
         return show_settings(chat_id, msg_id)
 
-    if (
-        data == "addcustom" or data.startswith("w:") or data.startswith("del:")
-        or data.startswith("setmax:") or data.startswith("setmin:") or data.startswith("add:")
-    ):
-        answer_cb(cb_id, "Bot đang săn mọi máy theo khoảng giá")
-        return show_price(chat_id, msg_id)
+    if data.startswith("w:"):
+        answer_cb(cb_id)
+        return show_watch_detail(chat_id, msg_id, int(data.split(":")[1]))
+
+    if data.startswith("del:"):
+        idx = int(data.split(":")[1])
+        with cfg_lock:
+            cfg = load_config()
+            if idx < len(cfg["watch"]):
+                removed = cfg["watch"].pop(idx)
+                save_config(cfg)
+                answer_cb(cb_id, f"Đã xóa {removed['keyword']}")
+        return show_watch(chat_id, msg_id)
+
+    if data.startswith("setmax:") or data.startswith("setmin:"):
+        idx = int(data.split(":")[1])
+        kind = "max" if data.startswith("setmax") else "min"
+        pending[chat_id] = {"action": f"set{kind}", "idx": idx, "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, f"💵 Gửi mức giá {kind} (ví dụ: <b>700000</b> hoặc <b>70만</b>):")
+
+    if data.startswith("add:"):
+        i = int(data.split(":")[1])
+        _, kwd = PRESETS[i]
+        with cfg_lock:
+            cfg = load_config()
+            if any(w["keyword"] == kwd for w in cfg["watch"]):
+                answer_cb(cb_id, "Đã có rồi")
+            else:
+                cfg["watch"].append({"keyword": kwd, "min_price": 0, "max_price": 700000})
+                save_config(cfg)
+                answer_cb(cb_id, f"Đã thêm {kwd}")
+        return show_watch(chat_id, msg_id)
+
+    if data == "addcustom":
+        pending[chat_id] = {"action": "addkw", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "⌨️ Gõ tên máy (tiếng Hàn tốt nhất, ví dụ <b>아이폰 13 미니</b>). "
+                             "Nếu gõ tiếng Việt, AI sẽ tự chuyển.")
 
     answer_cb(cb_id)
 
@@ -847,14 +879,32 @@ def handle_message(msg: dict):
         send(chat_id, f"✅ Đã lưu <b>{len(keys[:20])}</b> API key AI.")
         return show_main(chat_id)
     if action in ("setmax", "setmin"):
+        price = parse_price_input(text)
+        if price is None:
+            return send(chat_id, "⚠️ Không hiểu giá. Gửi lại số (vd 700000 hoặc 70만):")
+        with cfg_lock:
+            cfg = load_config()
+            idx = state["idx"]
+            if idx < len(cfg["watch"]):
+                key = "max_price" if action == "setmax" else "min_price"
+                cfg["watch"][idx][key] = price
+                save_config(cfg)
         pending.pop(chat_id, None)
-        send(chat_id, "⚠️ Bot hiện săn mọi máy theo <b>khoảng giá chung</b>, không đặt giá từng model nữa.")
-        return show_price(chat_id, state.get("msg_id")) if state.get("msg_id") else show_main(chat_id)
+        send(chat_id, f"✅ Đã đặt giá {won(price)}.")
+        return show_main(chat_id)
 
     if action == "addkw":
+        kwd = vi_to_korean_keyword(text)
+        with cfg_lock:
+            cfg = load_config()
+            if any(w["keyword"] == kwd for w in cfg["watch"]):
+                send(chat_id, "Máy này đã có trong danh sách.")
+            else:
+                cfg["watch"].append({"keyword": kwd, "min_price": 0, "max_price": 700000})
+                save_config(cfg)
+                send(chat_id, f"✅ Đã thêm: <b>{html.escape(kwd)}</b> (giá tối đa 70만, sửa trong menu).")
         pending.pop(chat_id, None)
-        send(chat_id, "⚠️ Bot hiện săn mọi điện thoại theo <b>khoảng giá chung</b>, không thêm từng model nữa.")
-        return show_price(chat_id, state.get("msg_id")) if state.get("msg_id") else show_main(chat_id)
+        return show_main(chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1077,6 +1127,9 @@ def run_scan(manual_chat: int | None = None):
                             vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"))
                             if vi:
                                 ai_budget -= 1
+                            # AI thẩm định: bỏ qua nếu không phải điện thoại hoặc đang hỏng.
+                            if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):
+                                continue
                         msg = build_message(it, cond, kw, False, vi)
                         found += 1
                         phone_count += 1

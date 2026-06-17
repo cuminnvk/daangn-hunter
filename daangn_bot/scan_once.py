@@ -57,20 +57,6 @@ def save_last_run_ts(ts: float) -> None:
     )
 
 
-def notify_worker_scan_done(found: int, free_count: int, phone_count: int) -> None:
-    if not WORKER_URL or not WORKER_SECRET:
-        return
-    try:
-        requests.post(
-            f"{WORKER_URL}/ping",
-            params={"key": WORKER_SECRET},
-            json={"found": found, "free": free_count, "phone": phone_count},
-            timeout=10,
-        )
-    except requests.RequestException as exc:
-        print(f"[Worker] lỗi báo scan xong: {exc}", file=sys.stderr)
-
-
 def fetch_remote_state() -> tuple[dict | None, list[int] | None]:
     """Lấy config + subscribers từ Worker. Trả (None, None) nếu không có."""
     if not WORKER_URL:
@@ -157,6 +143,11 @@ def main() -> int:
     kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
     processed: set[str] = set()
     digests: dict[int, list[str]] = {t: [] for t in targets}
+    gmin = int(cfg.get("phone_min_price", 0) or 0)
+    gmax = int(cfg.get("phone_max_price", 0) or 0)
+    grange = {"min_price": gmin, "max_price": gmax}
+    kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
+
     print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
     print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")
 
@@ -253,6 +244,8 @@ def main() -> int:
                         vi = groq_ai.describe_vi(it, cond, ai_keys, cfg.get("ai_model"))
                         if vi:
                             ai_budget -= 1
+                        if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):
+                            continue
                     msg = bot.build_message(it, cond, kw, False, vi)
                     found += 1
                     phone_count += 1
@@ -293,27 +286,11 @@ def main() -> int:
 
     bot.save_seen(seen)
     save_last_run_ts(time.time())
-    notify_worker_scan_done(found, free_count, phone_count)
     print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")
-    if FORCE_SCAN or cfg.get("send_scan_summary", True):
-        for t in targets:
-            bot.send(t, f"✅ Quét xong. Tin mới: <b>{found}</b> (free {free_count}, máy {phone_count}).")
     return 0
 
 
 STATE: tuple[dict | None, list[int] | None] = (None, None)
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception as exc:  # noqa: BLE001
-        print(f"[Quét lỗi] {exc}", file=sys.stderr)
-        if bot.TOKEN and FORCE_SCAN:
-            try:
-                if STATE == (None, None):
-                    STATE = fetch_remote_state()
-                for target in resolve_subscribers():
-                    bot.send(target, f"⚠️ Lỗi khi quét: {exc}")
-            except Exception as notify_exc:  # noqa: BLE001
-                print(f"[Telegram báo lỗi thất bại] {notify_exc}", file=sys.stderr)
-        raise
+    raise SystemExit(main())

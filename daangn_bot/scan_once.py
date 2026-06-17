@@ -137,8 +137,19 @@ def main() -> int:
     digest_mode = bool(cfg.get("digest_mode", False))
     nationwide = bool(cfg.get("nationwide", True))
     max_age_hours = int(cfg.get("listing_max_age_hours", 24) or 24)
+    gmin = int(cfg.get("phone_min_price", 0) or 0)
+    gmax = int(cfg.get("phone_max_price", 0) or 0)
+    grange = {"min_price": gmin, "max_price": gmax}
+    kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
     processed: set[str] = set()
     digests: dict[int, list[str]] = {t: [] for t in targets}
+    gmin = int(cfg.get("phone_min_price", 0) or 0)
+    gmax = int(cfg.get("phone_max_price", 0) or 0)
+    grange = {"min_price": gmin, "max_price": gmax}
+    kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
+
+    print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
+    print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")
 
     def dispatch_item(msg: str) -> None:
         if digest_mode:
@@ -150,9 +161,6 @@ def main() -> int:
         if send_delay > 0:
             time.sleep(send_delay)
 
-    print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
-    print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(
@@ -161,11 +169,6 @@ def main() -> int:
             extra_http_headers={"Accept-Language": "ko-KR,ko;q=0.9"},
         )
         page = ctx.new_page()
-
-        gmin = int(cfg.get("phone_min_price", 0) or 0)
-        gmax = int(cfg.get("phone_max_price", 0) or 0)
-        grange = {"min_price": gmin, "max_price": gmax}
-        kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
 
         def scan_free_region(rid, rname):
             nonlocal found, ai_budget, free_count

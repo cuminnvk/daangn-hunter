@@ -36,10 +36,10 @@ const DEFAULT_CONFIG = {
     { keyword: "갤럭시 S24", min_price: 200000, max_price: 650000 },
   ],
   // Săn MỌI loại máy trong khoảng giá này (không cần thêm từng máy).
-  phone_min_price: 0,
-  phone_max_price: 500000,
+  phone_min_price: 20000,
+  phone_max_price: 60000,
   phone_keywords: ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
-  strict_good: false,
+  strict_good: true,
   min_battery_percent: 70,
   phones_only: true,
   free_limit: 10,
@@ -64,7 +64,7 @@ const DEFAULT_CONFIG = {
   ai_model: "llama-3.3-70b-versatile",
   ai_max_calls: 30,
   exclude_words: ["부품", "수리용", "잠금", "아이클라우드"],
-  listing_max_age_hours: 168,
+  listing_max_age_hours: 24,
 };
 
 const PRESETS = [

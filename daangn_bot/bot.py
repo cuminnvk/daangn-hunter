@@ -91,10 +91,10 @@ DEFAULT_CONFIG = {
         {"keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000},
     ],
     # Săn MOI loại máy trong khoảng giá này (không cần thêm từng máy).
-    "phone_min_price": 0,
-    "phone_max_price": 500000,
+    "phone_min_price": 20000,
+    "phone_max_price": 60000,
     "phone_keywords": ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
-    "strict_good": False,       # bật nếu chỉ muốn máy thật tốt, ít tin hơn
+    "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
     "min_battery_percent": 70,  # pin tối thiểu nếu bật strict_good
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
     "free_limit": 10,           # số tin đồ free tối đa mỗi lượt quét
@@ -121,7 +121,7 @@ DEFAULT_CONFIG = {
     "ai_max_calls": 30,
     "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
     "nationwide": True,               # quét toàn quốc (dùng danh sách vùng rộng)
-    "listing_max_age_hours": 168,      # chỉ lấy tin đăng trong N giờ gần đây
+    "listing_max_age_hours": 24,       # chỉ lấy tin đăng trong N giờ gần đây
     # Danh sách vùng rộng dùng khi nationwide=True (phủ các thành phố lớn toàn quốc)
     "nationwide_regions": [
         {"id": "4376", "name": "서울시"}, {"id": "5834", "name": "강남구"},

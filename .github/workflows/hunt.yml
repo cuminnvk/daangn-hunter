@@ -61,6 +61,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin main
           if [ -n "$(git status --porcelain daangn_bot/seen.json daangn_bot/last_run.json)" ]; then
             git add daangn_bot/seen.json daangn_bot/last_run.json
             git commit -m "chore: update seen state [skip ci]"

@@ -131,6 +131,7 @@ def main() -> int:
     phone_count = 0
     free_limit = int(cfg.get("free_limit", 20) or 0)
     phone_limit = int(cfg.get("phone_limit", 20) or 0)
+    seen_ttl = int(cfg.get("seen_ttl_hours", 48) or 48)
     send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
     digest_mode = bool(cfg.get("digest_mode", False))
     processed: set[str] = set()
@@ -174,12 +175,14 @@ def main() -> int:
                     return
                 if it["id"] in processed:
                     continue
+                if bot.seen_recent(seen, it["id"], seen_ttl):
+                    continue
+                if not bot.pass_region_filter(it, cfg):
+                    continue
                 cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
                 if not bot.match_free(it, cfg, cond):
                     continue
                 processed.add(it["id"])
-                if it["id"] in seen:
-                    continue
                 vi = None
                 if ai_on and ai_budget > 0:
                     vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"), is_free=True)
@@ -189,7 +192,7 @@ def main() -> int:
                 found += 1
                 free_count += 1
                 dispatch_item(msg)
-                seen.add(it["id"])
+                bot.mark_seen(seen, it["id"])
 
         def scan_phones_region(rid, rname):
             nonlocal found, ai_budget, phone_count
@@ -201,10 +204,15 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                     continue
+                items = sorted(items, key=lambda it: bot.bot_deal_rank(it))
                 for it in items:
                     if phone_limit and phone_count >= phone_limit:
                         return
                     if it["id"] in processed:
+                        continue
+                    if bot.seen_recent(seen, it["id"], seen_ttl):
+                        continue
+                    if not bot.pass_region_filter(it, cfg):
                         continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
@@ -218,8 +226,6 @@ def main() -> int:
                     if not bot.match_phone(it, grange, cfg, cond):
                         continue
                     processed.add(it["id"])
-                    if it["id"] in seen:
-                        continue
                     vi = None
                     if ai_on and ai_budget > 0:
                         vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"))
@@ -231,7 +237,7 @@ def main() -> int:
                     found += 1
                     phone_count += 1
                     dispatch_item(msg)
-                    seen.add(it["id"])
+                    bot.mark_seen(seen, it["id"])
 
         for region in cfg.get("regions", []):
             done_free = (not free_limit) or free_count >= free_limit

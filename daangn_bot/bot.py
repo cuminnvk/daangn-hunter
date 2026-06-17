@@ -104,6 +104,9 @@ DEFAULT_CONFIG = {
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
     "quiet_end_hour": 7,
+    "seen_ttl_hours": 48,       # tin đã quét sẽ không hiện lại trong 2 ngày
+    "region_filter_enabled": False,
+    "region_filter_terms": [],  # ví dụ ["역삼", "송도"]
     "free_electronics": True,
     "free_first": True,         # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
@@ -159,12 +162,39 @@ def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def load_seen() -> set[str]:
-    return set(load_json(STATE_PATH, []))
+def load_seen() -> dict[str, float]:
+    """Đọc seen.json theo dạng {id: timestamp}. Tương thích dữ liệu list cũ."""
+    raw = load_json(STATE_PATH, {})
+    now = time.time()
+    if isinstance(raw, dict):
+        out: dict[str, float] = {}
+        for k, v in raw.items():
+            try:
+                out[str(k)] = float(v)
+            except (TypeError, ValueError):
+                continue
+        return out
+    if isinstance(raw, list):
+        # Dữ liệu cũ dạng list id -> coi như vừa thấy gần đây.
+        return {str(x): now for x in raw}
+    return {}
 
 
-def save_seen(seen: set[str]) -> None:
-    STATE_PATH.write_text(json.dumps(list(seen)[-8000:], ensure_ascii=False), encoding="utf-8")
+def save_seen(seen: dict[str, float]) -> None:
+    # Giữ tối đa 8k mục mới nhất theo thời gian.
+    items = sorted(seen.items(), key=lambda kv: kv[1])[-8000:]
+    STATE_PATH.write_text(json.dumps(dict(items), ensure_ascii=False), encoding="utf-8")
+
+
+def seen_recent(seen: dict[str, float], item_id: str, ttl_hours: int) -> bool:
+    ts = seen.get(str(item_id))
+    if ts is None:
+        return False
+    return (time.time() - ts) < max(1, ttl_hours) * 3600
+
+
+def mark_seen(seen: dict[str, float], item_id: str) -> None:
+    seen[str(item_id)] = time.time()
 
 
 def load_subs() -> list[int]:
@@ -322,6 +352,25 @@ def is_quiet_hours(cfg: dict) -> bool:
     return h >= st or h < en
 
 
+def pass_region_filter(item: dict, cfg: dict) -> bool:
+    """Lọc theo vùng nếu người dùng bật tính năng này."""
+    if not cfg.get("region_filter_enabled", False):
+        return True
+    terms = cfg.get("region_filter_terms") or []
+    terms = [str(t).strip().lower() for t in terms if str(t).strip()]
+    if not terms:
+        return True
+    r = str(item.get("region", "")).lower()
+    return any(t in r for t in terms)
+
+
+def bot_deal_rank(item: dict) -> tuple[int, int]:
+    """Sort key: deal hời trước, rồi giá thấp trước."""
+    hot = 1 if deal_badge(item.get("title", ""), item.get("price"), False) else 0
+    price = item.get("price") or 10**9
+    return (-hot, int(price))
+
+
 # ---------------------------------------------------------------------------
 # MENU
 # ---------------------------------------------------------------------------
@@ -458,6 +507,9 @@ def settings_markup(cfg: dict) -> dict:
     q_on = cfg.get("quiet_hours_enabled", False)
     q_st = int(cfg.get("quiet_start_hour", 23) or 23)
     q_en = int(cfg.get("quiet_end_hour", 7) or 7)
+    r_on = cfg.get("region_filter_enabled", False)
+    r_terms = ", ".join(cfg.get("region_filter_terms", [])[:2])
+    r_text = r_terms if r_terms else "chưa đặt"
     return kb([
         [btn(f"{mark(cfg.get('phones_only', True))} Chỉ điện thoại (loại vỏ/ốp)", "t:phones_only")],
         [btn(f"{mark(cfg.get('strict_good', True))} Chỉ máy còn tốt (nghiêm ngặt)", "t:strict_good")],
@@ -468,6 +520,8 @@ def settings_markup(cfg: dict) -> dict:
         [btn(f"{mark(cfg.get('digest_mode', False))} Chế độ gửi gộp (digest)", "t:digest_mode")],
         [btn(f"{mark(q_on)} Giờ yên lặng ({q_st}:00-{q_en}:00)", "t:quiet_hours_enabled")],
         [btn("🌙 Đặt giờ yên lặng", "setquiet")],
+        [btn(f"{mark(r_on)} Lọc theo vùng", "t:region_filter_enabled")],
+        [btn(f"📍 Vùng ưu tiên: {r_text}", "setregion")],
         [btn(f"🔋 Pin tối thiểu: {mb}%", "setbattery")],
         [btn(f"🔢 Giới hạn: {fl} free / {pl} máy / lượt", "setlimit")],
         [btn(f"⏳ Giãn gửi: {sd}s / tin", "setdelay")],
@@ -576,6 +630,11 @@ def handle_callback(cb: dict):
         pending[chat_id] = {"action": "setquiet", "msg_id": msg_id}
         answer_cb(cb_id)
         return send(chat_id, "🌙 Gửi giờ yên lặng <b>BẮT ĐẦU KẾT THÚC</b> (0-23), ví dụ <b>23 7</b>")
+
+    if data == "setregion":
+        pending[chat_id] = {"action": "setregion", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "📍 Gửi danh sách vùng ưu tiên, cách nhau dấu phẩy. Ví dụ: <b>역삼동, 송도동</b>")
 
     if data.startswith("int:"):
         m = int(data.split(":")[1])
@@ -743,6 +802,18 @@ def handle_message(msg: dict):
         pending.pop(chat_id, None)
         send(chat_id, f"✅ Đã đặt giờ yên lặng: <b>{st}:00 → {en}:00</b>.")
         return show_main(chat_id)
+    if action == "setregion":
+        terms = [s.strip() for s in text.split(",") if s.strip()]
+        with cfg_lock:
+            cfg = load_config()
+            cfg["region_filter_terms"] = terms[:10]
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        if terms:
+            send(chat_id, f"✅ Đã đặt vùng ưu tiên: <b>{html.escape(', '.join(terms[:5]))}</b>")
+        else:
+            send(chat_id, "✅ Đã xóa danh sách vùng ưu tiên.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -864,6 +935,7 @@ def run_scan(manual_chat: int | None = None):
         phone_count = 0
         free_limit = int(cfg.get("free_limit", 20) or 0)
         phone_limit = int(cfg.get("phone_limit", 20) or 0)
+        seen_ttl = int(cfg.get("seen_ttl_hours", 48) or 48)
         send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
         digest_mode = bool(cfg.get("digest_mode", False))
         quiet_now = is_quiet_hours(cfg) and manual_chat is None
@@ -914,12 +986,14 @@ def run_scan(manual_chat: int | None = None):
                         return
                     if it["id"] in processed:
                         continue
+                    if seen_recent(seen, it["id"], seen_ttl):
+                        continue
+                    if not pass_region_filter(it, cfg):
+                        continue
                     cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
                     if not match_free(it, cfg, cond):
                         continue
                     processed.add(it["id"])
-                    if it["id"] in seen:
-                        continue
                     vi = None
                     if ai_on and ai_budget > 0:
                         vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"), is_free=True)
@@ -930,7 +1004,7 @@ def run_scan(manual_chat: int | None = None):
                     free_count += 1
                     dispatch_item(msg)
                     if not quiet_now:
-                        seen.add(it["id"])
+                        mark_seen(seen, it["id"])
 
             def scan_phones_region(rid, rname):
                 nonlocal found, ai_budget, phone_count, stopped
@@ -942,6 +1016,11 @@ def run_scan(manual_chat: int | None = None):
                     except Exception as exc:  # noqa: BLE001
                         print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                         continue
+                    # Ưu tiên gửi deal hời trước.
+                    items = sorted(
+                        items,
+                        key=lambda it: bot_deal_rank(it),
+                    )
                     for it in items:
                         if cancel_scan.is_set():
                             stopped = True
@@ -949,6 +1028,10 @@ def run_scan(manual_chat: int | None = None):
                         if phone_limit and phone_count >= phone_limit:
                             return
                         if it["id"] in processed:
+                            continue
+                        if seen_recent(seen, it["id"], seen_ttl):
+                            continue
+                        if not pass_region_filter(it, cfg):
                             continue
                         # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                         if cfg.get("phones_only", True):
@@ -962,8 +1045,6 @@ def run_scan(manual_chat: int | None = None):
                         if not match_phone(it, grange, cfg, cond):
                             continue
                         processed.add(it["id"])
-                        if it["id"] in seen:
-                            continue
                         vi = None
                         if ai_on and ai_budget > 0:
                             vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"))
@@ -977,7 +1058,7 @@ def run_scan(manual_chat: int | None = None):
                         phone_count += 1
                         dispatch_item(msg)
                         if not quiet_now:
-                            seen.add(it["id"])
+                            mark_seen(seen, it["id"])
 
             for region in cfg.get("regions", []):
                 if stopped or cancel_scan.is_set():

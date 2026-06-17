@@ -49,6 +49,9 @@ const DEFAULT_CONFIG = {
   quiet_hours_enabled: false,
   quiet_start_hour: 23,
   quiet_end_hour: 7,
+  seen_ttl_hours: 48,
+  region_filter_enabled: false,
+  region_filter_terms: [],
   free_electronics: true,
   free_first: true,
   scan_interval_minutes: 30,
@@ -253,6 +256,8 @@ function settingsMenu(cfg) {
   const mb = cfg.min_battery_percent ?? 80;
   const qs = cfg.quiet_start_hour ?? 23;
   const qe = cfg.quiet_end_hour ?? 7;
+  const ttl = cfg.seen_ttl_hours ?? 48;
+  const rt = (cfg.region_filter_terms || []).slice(0, 2).join(", ") || "chưa đặt";
   return kb([
     [btn(`${m(cfg.phones_only !== false)} Chỉ điện thoại (loại vỏ/ốp)`, "t:phones_only")],
     [btn(`${m(cfg.strict_good !== false)} Chỉ máy còn tốt (nghiêm ngặt)`, "t:strict_good")],
@@ -263,6 +268,9 @@ function settingsMenu(cfg) {
     [btn(`${m(cfg.digest_mode)} Chế độ gửi gộp (digest)`, "t:digest_mode")],
     [btn(`${m(cfg.quiet_hours_enabled)} Giờ yên lặng (${qs}:00-${qe}:00)`, "t:quiet_hours_enabled")],
     [btn("🌙 Đặt giờ yên lặng", "setquiet")],
+    [btn(`${m(cfg.region_filter_enabled)} Lọc theo vùng`, "t:region_filter_enabled")],
+    [btn(`📍 Vùng ưu tiên: ${rt}`, "setregion")],
+    [btn(`🕒 Không lặp tin: ${ttl}h`, "setttl")],
     [btn(`🔋 Pin tối thiểu: ${mb}%`, "setbattery")],
     [btn(`🔢 Giới hạn: ${fl} free / ${pl} máy / lượt`, "setlimit")],
     [btn(`⏳ Giãn gửi: ${sd}s / tin`, "setdelay")],
@@ -397,6 +405,16 @@ async function handleCallback(env, cb) {
     await setPending(env, chatId, { action: "setquiet" });
     await answer(env, cb.id);
     return send(env, chatId, "🌙 Gửi giờ yên lặng <b>BẮT ĐẦU KẾT THÚC</b> (0-23), ví dụ: <b>23 7</b>");
+  }
+  if (data === "setregion") {
+    await setPending(env, chatId, { action: "setregion" });
+    await answer(env, cb.id);
+    return send(env, chatId, "📍 Gửi danh sách vùng ưu tiên, cách nhau dấu phẩy. Ví dụ: <b>역삼동, 송도동</b>");
+  }
+  if (data === "setttl") {
+    await setPending(env, chatId, { action: "setttl" });
+    await answer(env, cb.id);
+    return send(env, chatId, "🕒 Gửi số giờ không lặp tin, ví dụ: <b>48</b>");
   }
   if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
 
@@ -573,6 +591,26 @@ async function handleMessage(env, msg) {
     await saveConfig(env, cfg);
     await clearPending(env, chatId);
     await send(env, chatId, `✅ Đã đặt giờ yên lặng: <b>${cfg.quiet_start_hour}:00 → ${cfg.quiet_end_hour}:00</b>.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (state.action === "setregion") {
+    cfg.region_filter_terms = text.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 10);
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    if (cfg.region_filter_terms.length) {
+      await send(env, chatId, `✅ Đã đặt vùng ưu tiên: <b>${esc(cfg.region_filter_terms.slice(0, 5).join(", "))}</b>`);
+    } else {
+      await send(env, chatId, "✅ Đã xóa danh sách vùng ưu tiên.");
+    }
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (state.action === "setttl") {
+    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
+    if (nums.length < 1) return send(env, chatId, "⚠️ Gửi số giờ hợp lệ, ví dụ <b>48</b>");
+    cfg.seen_ttl_hours = Math.max(1, Math.min(168, nums[0]));
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Đã đặt không lặp tin trong <b>${cfg.seen_ttl_hours}</b> giờ.`);
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (state.action === "setmax" || state.action === "setmin") {

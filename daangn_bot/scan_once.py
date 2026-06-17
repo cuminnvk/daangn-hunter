@@ -104,6 +104,11 @@ def main() -> int:
     STATE = fetch_remote_state()
 
     cfg = resolve_config()
+    quiet_now = bot.is_quiet_hours(cfg) and not FORCE_SCAN
+    if quiet_now:
+        print("[Skip] Đang trong giờ yên lặng, tạm hoãn gửi tin.")
+        return 0
+
     interval_s = max(5, int(cfg.get("scan_interval_minutes", 30))) * 60
     if not FORCE_SCAN:
         last_ts = load_last_run_ts()
@@ -127,7 +132,19 @@ def main() -> int:
     free_limit = int(cfg.get("free_limit", 20) or 0)
     phone_limit = int(cfg.get("phone_limit", 20) or 0)
     send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
+    digest_mode = bool(cfg.get("digest_mode", False))
     processed: set[str] = set()
+    digests: dict[int, list[str]] = {t: [] for t in targets}
+
+    def dispatch_item(msg: str) -> None:
+        if digest_mode:
+            for t in targets:
+                digests[t].append(msg)
+            return
+        for t in targets:
+            bot.send(t, msg)
+        if send_delay > 0:
+            time.sleep(send_delay)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -171,11 +188,8 @@ def main() -> int:
                 msg = bot.build_message(it, cond, "나눔", True, vi)
                 found += 1
                 free_count += 1
-                for t in targets:
-                    bot.send(t, msg)
+                dispatch_item(msg)
                 seen.add(it["id"])
-                if send_delay > 0:
-                    time.sleep(send_delay)
 
         def scan_phones_region(rid, rname):
             nonlocal found, ai_budget, phone_count
@@ -216,11 +230,8 @@ def main() -> int:
                     msg = bot.build_message(it, cond, kw, False, vi)
                     found += 1
                     phone_count += 1
-                    for t in targets:
-                        bot.send(t, msg)
+                    dispatch_item(msg)
                     seen.add(it["id"])
-                    if send_delay > 0:
-                        time.sleep(send_delay)
 
         for region in cfg.get("regions", []):
             done_free = (not free_limit) or free_count >= free_limit
@@ -239,6 +250,17 @@ def main() -> int:
                 scan_free_region(rid, rname)
 
         browser.close()
+
+    if digest_mode:
+        for t, items in digests.items():
+            if not items:
+                continue
+            bot.send(t, f"📦 Bản tin gộp: <b>{len(items)}</b> tin mới (free {free_count}, máy {phone_count}).")
+            chunk_size = 5
+            for i in range(0, len(items), chunk_size):
+                bot.send(t, "\n\n━━━━━━━━━━\n\n".join(items[i:i + chunk_size]))
+                if send_delay > 0:
+                    time.sleep(send_delay)
 
     bot.save_seen(seen)
     save_last_run_ts(time.time())

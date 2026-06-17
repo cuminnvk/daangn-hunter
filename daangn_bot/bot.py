@@ -100,6 +100,10 @@ DEFAULT_CONFIG = {
     "free_limit": 20,           # số tin đồ free tối đa mỗi lượt quét
     "phone_limit": 20,          # số tin điện thoại tối đa mỗi lượt quét
     "send_delay_seconds": 10,   # giãn cách gửi từng tin để tránh lỗi
+    "digest_mode": False,       # gộp nhiều tin thành vài bản tin lớn
+    "quiet_hours_enabled": False,
+    "quiet_start_hour": 23,
+    "quiet_end_hour": 7,
     "free_electronics": True,
     "free_first": True,         # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
@@ -304,6 +308,20 @@ def deal_badge(title: str, price: int | None, is_free: bool) -> str | None:
     return None
 
 
+def is_quiet_hours(cfg: dict) -> bool:
+    """True nếu đang nằm trong khung giờ yên lặng do người dùng đặt."""
+    if not cfg.get("quiet_hours_enabled", False):
+        return False
+    st = int(cfg.get("quiet_start_hour", 23) or 23) % 24
+    en = int(cfg.get("quiet_end_hour", 7) or 7) % 24
+    h = time.localtime().tm_hour
+    if st == en:
+        return True
+    if st < en:
+        return st <= h < en
+    return h >= st or h < en
+
+
 # ---------------------------------------------------------------------------
 # MENU
 # ---------------------------------------------------------------------------
@@ -437,6 +455,9 @@ def settings_markup(cfg: dict) -> dict:
     pl = cfg.get("phone_limit", 20)
     sd = int(cfg.get("send_delay_seconds", 10) or 0)
     mb = int(cfg.get("min_battery_percent", 80) or 0)
+    q_on = cfg.get("quiet_hours_enabled", False)
+    q_st = int(cfg.get("quiet_start_hour", 23) or 23)
+    q_en = int(cfg.get("quiet_end_hour", 7) or 7)
     return kb([
         [btn(f"{mark(cfg.get('phones_only', True))} Chỉ điện thoại (loại vỏ/ốp)", "t:phones_only")],
         [btn(f"{mark(cfg.get('strict_good', True))} Chỉ máy còn tốt (nghiêm ngặt)", "t:strict_good")],
@@ -444,6 +465,9 @@ def settings_markup(cfg: dict) -> dict:
         [btn(f"{mark(cfg.get('skip_sold'))} Bỏ tin đã bán", "t:skip_sold")],
         [btn(f"{mark(cfg.get('skip_reserved'))} Bỏ tin đang giữ chỗ", "t:skip_reserved")],
         [btn(f"{mark(cfg.get('use_ai'))} AI dịch & phân tích (Groq)", "t:use_ai")],
+        [btn(f"{mark(cfg.get('digest_mode', False))} Chế độ gửi gộp (digest)", "t:digest_mode")],
+        [btn(f"{mark(q_on)} Giờ yên lặng ({q_st}:00-{q_en}:00)", "t:quiet_hours_enabled")],
+        [btn("🌙 Đặt giờ yên lặng", "setquiet")],
         [btn(f"🔋 Pin tối thiểu: {mb}%", "setbattery")],
         [btn(f"🔢 Giới hạn: {fl} free / {pl} máy / lượt", "setlimit")],
         [btn(f"⏳ Giãn gửi: {sd}s / tin", "setdelay")],
@@ -547,6 +571,11 @@ def handle_callback(cb: dict):
         pending[chat_id] = {"action": "setbattery", "msg_id": msg_id}
         answer_cb(cb_id)
         return send(chat_id, "🔋 Gửi ngưỡng pin tối thiểu (%), ví dụ <b>80</b>")
+
+    if data == "setquiet":
+        pending[chat_id] = {"action": "setquiet", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "🌙 Gửi giờ yên lặng <b>BẮT ĐẦU KẾT THÚC</b> (0-23), ví dụ <b>23 7</b>")
 
     if data.startswith("int:"):
         m = int(data.split(":")[1])
@@ -700,6 +729,20 @@ def handle_message(msg: dict):
         pending.pop(chat_id, None)
         send(chat_id, f"✅ Đã đặt ngưỡng pin tối thiểu: <b>{pin}%</b>.")
         return show_main(chat_id)
+    if action == "setquiet":
+        nums = [int(n) for n in re.findall(r"\d+", text)]
+        if len(nums) < 2:
+            return send(chat_id, "⚠️ Gửi 2 số giờ (0-23), ví dụ <b>23 7</b>")
+        st = max(0, min(23, nums[0]))
+        en = max(0, min(23, nums[1]))
+        with cfg_lock:
+            cfg = load_config()
+            cfg["quiet_start_hour"] = st
+            cfg["quiet_end_hour"] = en
+            save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Đã đặt giờ yên lặng: <b>{st}:00 → {en}:00</b>.")
+        return show_main(chat_id)
     if action in ("setmax", "setmin"):
         price = parse_price_input(text)
         if price is None:
@@ -822,8 +865,23 @@ def run_scan(manual_chat: int | None = None):
         free_limit = int(cfg.get("free_limit", 20) or 0)
         phone_limit = int(cfg.get("phone_limit", 20) or 0)
         send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
+        digest_mode = bool(cfg.get("digest_mode", False))
+        quiet_now = is_quiet_hours(cfg) and manual_chat is None
         stopped = False
         processed: set[str] = set()
+        digests: dict[int, list[str]] = {t: [] for t in targets}
+
+        def dispatch_item(msg: str) -> None:
+            if quiet_now:
+                return
+            if digest_mode:
+                for t in targets:
+                    digests[t].append(msg)
+                return
+            for t in targets:
+                send(t, msg)
+            if send_delay > 0:
+                time.sleep(send_delay)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=cfg.get("headless", True))
@@ -870,11 +928,9 @@ def run_scan(manual_chat: int | None = None):
                     msg = build_message(it, cond, "나눔", True, vi)
                     found += 1
                     free_count += 1
-                    for t in targets:
-                        send(t, msg)
-                    seen.add(it["id"])
-                    if send_delay > 0:
-                        time.sleep(send_delay)
+                    dispatch_item(msg)
+                    if not quiet_now:
+                        seen.add(it["id"])
 
             def scan_phones_region(rid, rname):
                 nonlocal found, ai_budget, phone_count, stopped
@@ -919,11 +975,9 @@ def run_scan(manual_chat: int | None = None):
                         msg = build_message(it, cond, kw, False, vi)
                         found += 1
                         phone_count += 1
-                        for t in targets:
-                            send(t, msg)
-                        seen.add(it["id"])
-                        if send_delay > 0:
-                            time.sleep(send_delay)
+                        dispatch_item(msg)
+                        if not quiet_now:
+                            seen.add(it["id"])
 
             for region in cfg.get("regions", []):
                 if stopped or cancel_scan.is_set():
@@ -946,6 +1000,18 @@ def run_scan(manual_chat: int | None = None):
 
             browser.close()
 
+        # Gửi theo chế độ digest sau khi quét xong để giảm spam thông báo.
+        if digest_mode and not quiet_now:
+            for t, items in digests.items():
+                if not items:
+                    continue
+                send(t, f"📦 Bản tin gộp: <b>{len(items)}</b> tin mới (free {free_count}, máy {phone_count}).")
+                chunk_size = 5
+                for i in range(0, len(items), chunk_size):
+                    send(t, "\n\n━━━━━━━━━━\n\n".join(items[i:i + chunk_size]))
+                    if send_delay > 0:
+                        time.sleep(send_delay)
+
         save_seen(seen)
         last_scan_info["time"] = time.time()
         last_scan_info["found"] = found
@@ -957,6 +1023,8 @@ def run_scan(manual_chat: int | None = None):
             if stopped:
                 tin = f"⏹ Đã dừng. Đã gửi: <b>{found}</b> tin (free {free_count}, máy {phone_count})."
             send(manual_chat, tin)
+        elif quiet_now and found > 0:
+            print(f"[Quiet Hours] Tạm hoãn gửi {found} tin do đang trong giờ yên lặng.")
     except Exception as exc:  # noqa: BLE001
         print(f"[Quét lỗi] {exc}", file=sys.stderr)
         if manual_chat:

@@ -45,6 +45,10 @@ const DEFAULT_CONFIG = {
   free_limit: 20,
   phone_limit: 20,
   send_delay_seconds: 10,
+  digest_mode: false,
+  quiet_hours_enabled: false,
+  quiet_start_hour: 23,
+  quiet_end_hour: 7,
   free_electronics: true,
   free_first: true,
   scan_interval_minutes: 30,
@@ -247,6 +251,8 @@ function settingsMenu(cfg) {
   const fl = cfg.free_limit ?? 20, pl = cfg.phone_limit ?? 20;
   const sd = cfg.send_delay_seconds ?? 10;
   const mb = cfg.min_battery_percent ?? 80;
+  const qs = cfg.quiet_start_hour ?? 23;
+  const qe = cfg.quiet_end_hour ?? 7;
   return kb([
     [btn(`${m(cfg.phones_only !== false)} Chỉ điện thoại (loại vỏ/ốp)`, "t:phones_only")],
     [btn(`${m(cfg.strict_good !== false)} Chỉ máy còn tốt (nghiêm ngặt)`, "t:strict_good")],
@@ -254,6 +260,9 @@ function settingsMenu(cfg) {
     [btn(`${m(cfg.skip_sold)} Bỏ tin đã bán`, "t:skip_sold")],
     [btn(`${m(cfg.skip_reserved)} Bỏ tin đang giữ chỗ`, "t:skip_reserved")],
     [btn(`${m(cfg.use_ai)} AI dịch & phân tích (Groq)`, "t:use_ai")],
+    [btn(`${m(cfg.digest_mode)} Chế độ gửi gộp (digest)`, "t:digest_mode")],
+    [btn(`${m(cfg.quiet_hours_enabled)} Giờ yên lặng (${qs}:00-${qe}:00)`, "t:quiet_hours_enabled")],
+    [btn("🌙 Đặt giờ yên lặng", "setquiet")],
     [btn(`🔋 Pin tối thiểu: ${mb}%`, "setbattery")],
     [btn(`🔢 Giới hạn: ${fl} free / ${pl} máy / lượt`, "setlimit")],
     [btn(`⏳ Giãn gửi: ${sd}s / tin`, "setdelay")],
@@ -383,6 +392,11 @@ async function handleCallback(env, cb) {
     await setPending(env, chatId, { action: "setbattery" });
     await answer(env, cb.id);
     return send(env, chatId, "🔋 Gửi ngưỡng pin tối thiểu (%), ví dụ: <b>80</b>");
+  }
+  if (data === "setquiet") {
+    await setPending(env, chatId, { action: "setquiet" });
+    await answer(env, cb.id);
+    return send(env, chatId, "🌙 Gửi giờ yên lặng <b>BẮT ĐẦU KẾT THÚC</b> (0-23), ví dụ: <b>23 7</b>");
   }
   if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
 
@@ -549,6 +563,16 @@ async function handleMessage(env, msg) {
     await saveConfig(env, cfg);
     await clearPending(env, chatId);
     await send(env, chatId, `✅ Đã đặt pin tối thiểu: <b>${cfg.min_battery_percent}%</b>.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (state.action === "setquiet") {
+    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
+    if (nums.length < 2) return send(env, chatId, "⚠️ Gửi 2 số giờ (0-23), ví dụ <b>23 7</b>");
+    cfg.quiet_start_hour = Math.max(0, Math.min(23, nums[0]));
+    cfg.quiet_end_hour = Math.max(0, Math.min(23, nums[1]));
+    await saveConfig(env, cfg);
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Đã đặt giờ yên lặng: <b>${cfg.quiet_start_hour}:00 → ${cfg.quiet_end_hour}:00</b>.`);
     return send(env, chatId, mainText(cfg), mainMenu(cfg));
   }
   if (state.action === "setmax" || state.action === "setmin") {

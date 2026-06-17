@@ -1,0 +1,771 @@
+#!/usr/bin/env python3
+"""Daangn Phone Hunter — bot Telegram luôn-bật, có menu thiết lập.
+
+Tính năng:
+- Quét điện thoại theo từ khóa + khoảng giá, và đồ ĐIỆN TỬ MIỄN PHÍ (나눔).
+- Dịch & đánh giá sang TIẾNG VIỆT bằng Groq AI.
+- Menu tương tác trên Telegram: đặt giá, thêm/bớt máy, bật/tắt đồ miễn phí,
+  đổi tần suất, quét ngay...
+- Tự quét định kỳ trong nền + chống trùng.
+
+Chạy: python bot.py   (cần TELEGRAM_BOT_TOKEN, GROQ_API_KEY trong .env)
+"""
+from __future__ import annotations
+
+import html
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+
+import requests
+from playwright.sync_api import sync_playwright
+
+import scraper
+import groq_ai
+
+# In tiếng Hàn/Việt trên console Windows.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.json"
+STATE_PATH = BASE_DIR / "seen.json"
+SUBS_PATH = BASE_DIR / "subscribers.json"
+
+# ---------------------------------------------------------------------------
+# Nạp .env (đơn giản, không cần thư viện)
+# ---------------------------------------------------------------------------
+
+def load_env() -> None:
+    env_file = BASE_DIR / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip())
+
+
+load_env()
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+OWNER_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+API = f"https://api.telegram.org/bot{TOKEN}"
+
+# ---------------------------------------------------------------------------
+# Khóa & trạng thái dùng chung
+# ---------------------------------------------------------------------------
+cfg_lock = threading.Lock()
+scan_lock = threading.Lock()
+scan_event = threading.Event()      # kích hoạt quét ngay
+stop_event = threading.Event()
+pending: dict[int, dict] = {}        # trạng thái nhập liệu theo chat
+last_scan_info = {"time": None, "found": 0}
+
+DEFAULT_CONFIG = {
+    "regions": [
+        {"id": 6035, "name": "역삼동"},
+        {"id": 355, "name": "신림동"},
+        {"id": 6052, "name": "마곡동"},
+        {"id": 6543, "name": "송도동"},
+        {"id": 1766, "name": "봉담읍"},
+        {"id": 1604, "name": "별내동"},
+        {"id": 4245, "name": "배곧동"},
+        {"id": 2292, "name": "불당동"},
+        {"id": 3662, "name": "물금읍"},
+        {"id": 2899, "name": "고흥읍"},
+    ],
+    "watch": [
+        {"keyword": "아이폰 15", "min_price": 200000, "max_price": 750000},
+        {"keyword": "아이폰 14", "min_price": 150000, "max_price": 550000},
+        {"keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000},
+    ],
+    "free_electronics": True,
+    "scan_interval_minutes": 30,
+    "headless": True,
+    "skip_sold": True,
+    "skip_reserved": True,
+    "skip_broken": True,
+    "use_ai": True,
+    "ai_model": groq_ai.DEFAULT_MODEL,
+    "ai_max_calls": 30,
+    "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
+}
+
+# Preset máy phổ biến cho menu "Thêm máy".
+PRESETS = [
+    ("iPhone 16", "아이폰 16"), ("iPhone 15", "아이폰 15"), ("iPhone 14", "아이폰 14"),
+    ("iPhone 13", "아이폰 13"), ("iPhone 12", "아이폰 12"), ("iPhone SE", "아이폰 SE"),
+    ("Galaxy S24", "갤럭시 S24"), ("Galaxy S23", "갤럭시 S23"), ("Galaxy Z Flip", "갤럭시 Z 플립"),
+    ("Galaxy Z Fold", "갤럭시 Z 폴드"), ("Galaxy Note", "갤럭시 노트"),
+    ("iPad", "아이패드"), ("Galaxy Tab", "갤럭시탭"), ("MacBook", "맥북"),
+    ("AirPods", "에어팟"), ("Apple Watch", "애플워치"),
+]
+INTERVALS = [10, 15, 30, 60, 120]
+
+
+# ---------------------------------------------------------------------------
+# Đọc/ghi file
+# ---------------------------------------------------------------------------
+
+def load_json(path: Path, default):
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return default
+    return default
+
+
+def load_config() -> dict:
+    cfg = load_json(CONFIG_PATH, None)
+    if not isinstance(cfg, dict):
+        cfg = dict(DEFAULT_CONFIG)
+        save_config(cfg)
+    for k, v in DEFAULT_CONFIG.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_seen() -> set[str]:
+    return set(load_json(STATE_PATH, []))
+
+
+def save_seen(seen: set[str]) -> None:
+    STATE_PATH.write_text(json.dumps(list(seen)[-8000:], ensure_ascii=False), encoding="utf-8")
+
+
+def load_subs() -> list[int]:
+    subs = load_json(SUBS_PATH, [])
+    return subs if isinstance(subs, list) else []
+
+
+def save_subs(subs: list[int]) -> None:
+    SUBS_PATH.write_text(json.dumps(subs), encoding="utf-8")
+
+
+def add_subscriber(chat_id: int) -> None:
+    subs = load_subs()
+    if chat_id not in subs:
+        subs.append(chat_id)
+        save_subs(subs)
+
+
+# ---------------------------------------------------------------------------
+# Telegram API
+# ---------------------------------------------------------------------------
+
+def tg(method: str, **params):
+    try:
+        r = requests.post(f"{API}/{method}", json=params, timeout=40)
+        return r.json()
+    except requests.RequestException as exc:
+        print(f"[TG lỗi] {method}: {exc}", file=sys.stderr)
+        return {"ok": False}
+
+
+def send(chat_id: int, text: str, markup: dict | None = None, preview: bool = True):
+    params = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": not preview,
+    }
+    if markup:
+        params["reply_markup"] = markup
+    return tg("sendMessage", **params)
+
+
+def edit(chat_id: int, msg_id: int, text: str, markup: dict | None = None):
+    params = {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML",
+              "disable_web_page_preview": True}
+    if markup:
+        params["reply_markup"] = markup
+    return tg("editMessageText", **params)
+
+
+def answer_cb(cb_id: str, text: str = ""):
+    tg("answerCallbackQuery", callback_query_id=cb_id, text=text)
+
+
+def kb(rows) -> dict:
+    return {"inline_keyboard": rows}
+
+
+def btn(text: str, data: str) -> dict:
+    return {"text": text, "callback_data": data}
+
+
+# ---------------------------------------------------------------------------
+# Định dạng số
+# ---------------------------------------------------------------------------
+
+def parse_price_input(text: str) -> int | None:
+    """Chấp nhận '700000', '70만', '70만원', '70'."""
+    t = text.replace(",", "").replace(" ", "").replace("원", "").lower()
+    try:
+        if "만" in t:
+            man = t.replace("만", "")
+            return int(float(man) * 10000) if man else None
+        val = int(float(t))
+        # Nếu người dùng gõ số nhỏ (<=1000) coi như 만원.
+        return val * 10000 if val <= 1000 else val
+    except ValueError:
+        return None
+
+
+def won(v: int) -> str:
+    return f"{v:,}원 ({v // 10000}만)" if v >= 10000 else f"{v:,}원"
+
+
+# ---------------------------------------------------------------------------
+# MENU
+# ---------------------------------------------------------------------------
+
+def main_menu_markup(cfg: dict) -> dict:
+    free = "BẬT ✅" if cfg.get("free_electronics") else "TẮT ⬜"
+    return kb([
+        [btn("🔍 Quét ngay", "scan")],
+        [btn("💰 Giá & máy săn", "watch")],
+        [btn(f"🎁 Đồ điện tử miễn phí: {free}", "togglefree")],
+        [btn(f"⏱ Tần suất: {cfg.get('scan_interval_minutes')} phút", "interval")],
+        [btn("⚙️ Cài đặt lọc", "settings")],
+        [btn("📊 Trạng thái", "status")],
+    ])
+
+
+def main_menu_text(cfg: dict) -> str:
+    n_watch = len(cfg.get("watch", []))
+    n_region = len(cfg.get("regions", []))
+    return (
+        "🥕 <b>Daangn Phone Hunter</b>\n\n"
+        f"📱 Đang săn: <b>{n_watch}</b> dòng máy\n"
+        f"🌍 Khu vực: <b>{n_region}</b>\n"
+        f"⏱ Quét mỗi <b>{cfg.get('scan_interval_minutes')}</b> phút\n\n"
+        "Chọn một mục bên dưới:"
+    )
+
+
+def show_main(chat_id: int, msg_id: int | None = None):
+    cfg = load_config()
+    if msg_id:
+        edit(chat_id, msg_id, main_menu_text(cfg), main_menu_markup(cfg))
+    else:
+        send(chat_id, main_menu_text(cfg), main_menu_markup(cfg))
+
+
+def watch_markup(cfg: dict) -> dict:
+    rows = []
+    for i, w in enumerate(cfg.get("watch", [])):
+        mx = w.get("max_price")
+        label = f"{w['keyword']}  ≤ {mx // 10000}만" if mx else w["keyword"]
+        rows.append([btn(f"📱 {label}", f"w:{i}")])
+    rows.append([btn("➕ Thêm máy", "addmenu")])
+    rows.append([btn("⬅️ Về menu chính", "home")])
+    return kb(rows)
+
+
+def show_watch(chat_id: int, msg_id: int):
+    cfg = load_config()
+    txt = "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:"
+    edit(chat_id, msg_id, txt, watch_markup(cfg))
+
+
+def watch_detail_markup(idx: int) -> dict:
+    return kb([
+        [btn("💵 Đặt giá tối đa", f"setmax:{idx}")],
+        [btn("💵 Đặt giá tối thiểu", f"setmin:{idx}")],
+        [btn("🗑 Xóa máy này", f"del:{idx}")],
+        [btn("⬅️ Quay lại", "watch")],
+    ])
+
+
+def show_watch_detail(chat_id: int, msg_id: int, idx: int):
+    cfg = load_config()
+    watch = cfg.get("watch", [])
+    if idx >= len(watch):
+        return show_watch(chat_id, msg_id)
+    w = watch[idx]
+    mn = w.get("min_price", 0) or 0
+    mx = w.get("max_price")
+    txt = (
+        f"📱 <b>{html.escape(w['keyword'])}</b>\n\n"
+        f"Giá tối thiểu: {won(mn) if mn else 'không đặt'}\n"
+        f"Giá tối đa: {won(mx) if mx else 'không đặt'}"
+    )
+    edit(chat_id, msg_id, txt, watch_detail_markup(idx))
+
+
+def add_menu_markup() -> dict:
+    rows = []
+    row = []
+    for i, (label, _kw) in enumerate(PRESETS):
+        row.append(btn(label, f"add:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([btn("⌨️ Gõ tên khác (Hàn/Việt)", "addcustom")])
+    rows.append([btn("⬅️ Quay lại", "watch")])
+    return kb(rows)
+
+
+def interval_markup(cfg: dict) -> dict:
+    cur = cfg.get("scan_interval_minutes")
+    rows = [[btn(("● " if m == cur else "") + f"{m} phút", f"int:{m}")] for m in INTERVALS]
+    rows.append([btn("⬅️ Về menu chính", "home")])
+    return kb(rows)
+
+
+def settings_markup(cfg: dict) -> dict:
+    def mark(v):
+        return "✅" if v else "⬜"
+    return kb([
+        [btn(f"{mark(cfg.get('skip_broken'))} Bỏ máy hỏng/lỗi", "t:skip_broken")],
+        [btn(f"{mark(cfg.get('skip_sold'))} Bỏ tin đã bán", "t:skip_sold")],
+        [btn(f"{mark(cfg.get('skip_reserved'))} Bỏ tin đang giữ chỗ", "t:skip_reserved")],
+        [btn(f"{mark(cfg.get('use_ai'))} AI dịch & đánh giá (Groq)", "t:use_ai")],
+        [btn("⬅️ Về menu chính", "home")],
+    ])
+
+
+def show_settings(chat_id: int, msg_id: int):
+    cfg = load_config()
+    edit(chat_id, msg_id, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settings_markup(cfg))
+
+
+# ---------------------------------------------------------------------------
+# Xử lý callback / message
+# ---------------------------------------------------------------------------
+
+def handle_callback(cb: dict):
+    data = cb.get("data", "")
+    msg = cb.get("message", {})
+    chat_id = msg.get("chat", {}).get("id")
+    msg_id = msg.get("message_id")
+    cb_id = cb.get("id")
+    add_subscriber(chat_id)
+
+    if data == "home":
+        answer_cb(cb_id)
+        return show_main(chat_id, msg_id)
+    if data == "watch":
+        answer_cb(cb_id)
+        return show_watch(chat_id, msg_id)
+    if data == "addmenu":
+        answer_cb(cb_id)
+        return edit(chat_id, msg_id, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", add_menu_markup())
+    if data == "settings":
+        answer_cb(cb_id)
+        return show_settings(chat_id, msg_id)
+    if data == "interval":
+        answer_cb(cb_id)
+        cfg = load_config()
+        return edit(chat_id, msg_id, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", interval_markup(cfg))
+    if data == "status":
+        answer_cb(cb_id)
+        cfg = load_config()
+        t = last_scan_info["time"]
+        tstr = time.strftime("%H:%M:%S %d/%m", time.localtime(t)) if t else "chưa quét"
+        txt = (
+            "📊 <b>Trạng thái</b>\n\n"
+            f"Lần quét gần nhất: {tstr}\n"
+            f"Tin mới lần trước: {last_scan_info['found']}\n"
+            f"AI: {'bật' if cfg.get('use_ai') and GROQ_KEY else 'tắt'}\n"
+            f"Đồ miễn phí: {'bật' if cfg.get('free_electronics') else 'tắt'}"
+        )
+        return edit(chat_id, msg_id, txt, kb([[btn("⬅️ Về menu chính", "home")]]))
+
+    if data == "togglefree":
+        with cfg_lock:
+            cfg = load_config()
+            cfg["free_electronics"] = not cfg.get("free_electronics")
+            save_config(cfg)
+        answer_cb(cb_id, "Đã cập nhật")
+        return show_main(chat_id, msg_id)
+
+    if data == "scan":
+        answer_cb(cb_id, "Bắt đầu quét...")
+        edit(chat_id, msg_id, "🔍 Đang quét... (vài phút)", kb([[btn("⬅️ Về menu chính", "home")]]))
+        threading.Thread(target=run_scan, kwargs={"manual_chat": chat_id}, daemon=True).start()
+        return
+
+    if data.startswith("int:"):
+        m = int(data.split(":")[1])
+        with cfg_lock:
+            cfg = load_config()
+            cfg["scan_interval_minutes"] = m
+            save_config(cfg)
+        answer_cb(cb_id, f"Đặt {m} phút")
+        return show_main(chat_id, msg_id)
+
+    if data.startswith("t:"):
+        field = data.split(":")[1]
+        with cfg_lock:
+            cfg = load_config()
+            cfg[field] = not cfg.get(field)
+            save_config(cfg)
+        answer_cb(cb_id, "Đã đổi")
+        return show_settings(chat_id, msg_id)
+
+    if data.startswith("w:"):
+        answer_cb(cb_id)
+        return show_watch_detail(chat_id, msg_id, int(data.split(":")[1]))
+
+    if data.startswith("del:"):
+        idx = int(data.split(":")[1])
+        with cfg_lock:
+            cfg = load_config()
+            if idx < len(cfg["watch"]):
+                removed = cfg["watch"].pop(idx)
+                save_config(cfg)
+                answer_cb(cb_id, f"Đã xóa {removed['keyword']}")
+        return show_watch(chat_id, msg_id)
+
+    if data.startswith("setmax:") or data.startswith("setmin:"):
+        idx = int(data.split(":")[1])
+        kind = "max" if data.startswith("setmax") else "min"
+        pending[chat_id] = {"action": f"set{kind}", "idx": idx, "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, f"💵 Gửi mức giá {kind} (ví dụ: <b>700000</b> hoặc <b>70만</b>):")
+
+    if data.startswith("add:"):
+        i = int(data.split(":")[1])
+        _, kwd = PRESETS[i]
+        with cfg_lock:
+            cfg = load_config()
+            if any(w["keyword"] == kwd for w in cfg["watch"]):
+                answer_cb(cb_id, "Đã có rồi")
+            else:
+                cfg["watch"].append({"keyword": kwd, "min_price": 0, "max_price": 700000})
+                save_config(cfg)
+                answer_cb(cb_id, f"Đã thêm {kwd}")
+        return show_watch(chat_id, msg_id)
+
+    if data == "addcustom":
+        pending[chat_id] = {"action": "addkw", "msg_id": msg_id}
+        answer_cb(cb_id)
+        return send(chat_id, "⌨️ Gõ tên máy (tiếng Hàn tốt nhất, ví dụ <b>아이폰 13 미니</b>). "
+                             "Nếu gõ tiếng Việt, AI sẽ tự chuyển.")
+
+    answer_cb(cb_id)
+
+
+def vi_to_korean_keyword(text: str) -> str:
+    """Chuyển tên máy tiếng Việt sang từ khóa tiếng Hàn bằng Groq (nếu cần)."""
+    if not GROQ_KEY or any("\uac00" <= c <= "\ud7a3" for c in text):
+        return text  # đã có chữ Hàn hoặc không có key
+    try:
+        body = {
+            "model": groq_ai.DEFAULT_MODEL,
+            "messages": [
+                {"role": "system", "content": "Trả về DUY NHẤT từ khóa tìm kiếm tiếng Hàn cho tên thiết bị, không giải thích."},
+                {"role": "user", "content": f"Tên thiết bị: {text}"},
+            ],
+            "temperature": 0,
+            "max_tokens": 30,
+        }
+        r = requests.post(groq_ai.GROQ_URL,
+                          headers={"Authorization": f"Bearer {GROQ_KEY}"},
+                          json=body, timeout=20)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip().strip('"')
+    except (requests.RequestException, KeyError, IndexError):
+        pass
+    return text
+
+
+def handle_message(msg: dict):
+    chat_id = msg.get("chat", {}).get("id")
+    text = (msg.get("text") or "").strip()
+    add_subscriber(chat_id)
+
+    if text in ("/start", "/menu"):
+        pending.pop(chat_id, None)
+        return show_main(chat_id)
+    if text == "/scan":
+        send(chat_id, "🔍 Đang quét...")
+        return threading.Thread(target=run_scan, kwargs={"manual_chat": chat_id}, daemon=True).start()
+
+    state = pending.get(chat_id)
+    if not state:
+        return show_main(chat_id)
+
+    action = state["action"]
+    if action in ("setmax", "setmin"):
+        price = parse_price_input(text)
+        if price is None:
+            return send(chat_id, "⚠️ Không hiểu giá. Gửi lại số (vd 700000 hoặc 70만):")
+        with cfg_lock:
+            cfg = load_config()
+            idx = state["idx"]
+            if idx < len(cfg["watch"]):
+                key = "max_price" if action == "setmax" else "min_price"
+                cfg["watch"][idx][key] = price
+                save_config(cfg)
+        pending.pop(chat_id, None)
+        send(chat_id, f"✅ Đã đặt giá {won(price)}.")
+        return show_main(chat_id)
+
+    if action == "addkw":
+        kwd = vi_to_korean_keyword(text)
+        with cfg_lock:
+            cfg = load_config()
+            if any(w["keyword"] == kwd for w in cfg["watch"]):
+                send(chat_id, "Máy này đã có trong danh sách.")
+            else:
+                cfg["watch"].append({"keyword": kwd, "min_price": 0, "max_price": 700000})
+                save_config(cfg)
+                send(chat_id, f"✅ Đã thêm: <b>{html.escape(kwd)}</b> (giá tối đa 70만, sửa trong menu).")
+        pending.pop(chat_id, None)
+        return show_main(chat_id)
+
+
+# ---------------------------------------------------------------------------
+# QUÉT
+# ---------------------------------------------------------------------------
+
+def match_phone(item: dict, watch: dict, cfg: dict, cond: dict) -> bool:
+    status = item.get("status", "")
+    if cfg.get("skip_sold", True) and status in ("Closed", "Traded"):
+        return False
+    if cfg.get("skip_reserved", True) and status == "Reserved":
+        return False
+    if cfg.get("skip_broken", True) and cond["broken"]:
+        return False
+    price = item["price"]
+    if price is None:
+        return False
+    if price < (watch.get("min_price", 0) or 0):
+        return False
+    mx = watch.get("max_price")
+    if mx is not None and price > mx:
+        return False
+    hay = (item["title"] + " " + item["content"]).lower()
+    return not any(b and b.lower() in hay for b in cfg.get("exclude_words", []))
+
+
+def match_free(item: dict, cfg: dict, cond: dict) -> bool:
+    status = item.get("status", "")
+    if cfg.get("skip_sold", True) and status in ("Closed", "Traded"):
+        return False
+    if cfg.get("skip_reserved", True) and status == "Reserved":
+        return False
+    if cfg.get("skip_broken", True) and cond["broken"]:
+        return False
+    return True
+
+
+def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict | None) -> str:
+    esc = html.escape
+    ten = (vi or {}).get("ten") or item["title"]
+    head = "🎁 <b>[MIỄN PHÍ]</b> " if is_free else "📱 "
+    lines = [f"{head}<b>{esc(ten)}</b>"]
+    if not is_free:
+        lines.append(f"💰 {item['price']:,}원")
+    else:
+        lines.append("💰 Miễn phí (đồ cho tặng)")
+    lines.append(f"📍 {esc(item['region'])}")
+    if cond["battery"] is not None:
+        lines.append(f"🔋 Pin: {cond['battery']}%")
+    sig = ("  (" + ", ".join(esc(s) for s in cond["signals"]) + ")") if cond["signals"] else ""
+    lines.append(f"🩺 Tình trạng: {cond['label']}{sig}")
+    if not is_free:
+        lines.append(f"🤝 Thương lượng: {scraper.detect_negotiable(item['content'])}")
+    lines.append("💬 Liên hệ: nhắn qua app 당근 (Daangn)")
+    if (vi or {}).get("danhgia"):
+        lines.append(f"🤖 {esc(vi['danhgia'])}")
+    if item["seller"]:
+        lines.append(f"👤 {esc(item['seller'])}")
+    lines.append(f"🔗 {item['link']}")
+    # Tên gốc tiếng Hàn (nhỏ) để đối chiếu
+    if (vi or {}).get("ten"):
+        lines.append(f"<i>🇰🇷 {esc(item['title'])}</i>")
+    return "\n".join(lines)
+
+
+def run_scan(manual_chat: int | None = None):
+    if not scan_lock.acquire(blocking=False):
+        if manual_chat:
+            send(manual_chat, "⏳ Đang có lượt quét khác chạy, thử lại sau.")
+        return
+    try:
+        cfg = load_config()
+        seen = load_seen()
+        subs = load_subs()
+        targets = [manual_chat] if manual_chat else subs
+        if not targets:
+            print("[Quét] chưa có người nhận (chưa /start).")
+        ai_on = bool(cfg.get("use_ai") and GROQ_KEY)
+        ai_budget = int(cfg.get("ai_max_calls", 30))
+        found = 0
+        processed: set[str] = set()
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=cfg.get("headless", True))
+            ctx = browser.new_context(
+                user_agent=scraper.USER_AGENT,
+                locale="ko-KR",
+                extra_http_headers={"Accept-Language": "ko-KR,ko;q=0.9"},
+            )
+            page = ctx.new_page()
+
+            for region in cfg.get("regions", []):
+                rid = str(region.get("id"))
+                rname = region.get("name", "")
+
+                # 1) Điện thoại theo từ khóa
+                for watch in cfg.get("watch", []):
+                    try:
+                        items = scraper.scrape_keyword(page, rid, rname, watch["keyword"])
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Lỗi] {watch['keyword']} @ {rname}: {exc}", file=sys.stderr)
+                        continue
+                    for it in items:
+                        if it["id"] in processed:
+                            continue
+                        cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
+                        if not match_phone(it, watch, cfg, cond):
+                            continue
+                        processed.add(it["id"])
+                        if it["id"] in seen:
+                            continue
+                        vi = None
+                        if ai_on and ai_budget > 0:
+                            vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"))
+                            if vi:
+                                ai_budget -= 1
+                        msg = build_message(it, cond, watch["keyword"], False, vi)
+                        found += 1
+                        for t in targets:
+                            send(t, msg)
+                        seen.add(it["id"])
+                        time.sleep(0.4)
+
+                # 2) Đồ điện tử miễn phí
+                if cfg.get("free_electronics"):
+                    try:
+                        free_items = scraper.scrape_free(page, rid, rname)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
+                        free_items = []
+                    for it in free_items:
+                        if it["id"] in processed:
+                            continue
+                        cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
+                        if not match_free(it, cfg, cond):
+                            continue
+                        processed.add(it["id"])
+                        if it["id"] in seen:
+                            continue
+                        vi = None
+                        if ai_on and ai_budget > 0:
+                            vi = groq_ai.describe_vi(it, cond, GROQ_KEY, cfg.get("ai_model"), is_free=True)
+                            if vi:
+                                ai_budget -= 1
+                        msg = build_message(it, cond, "나눔", True, vi)
+                        found += 1
+                        for t in targets:
+                            send(t, msg)
+                        seen.add(it["id"])
+                        time.sleep(0.4)
+
+            browser.close()
+
+        save_seen(seen)
+        last_scan_info["time"] = time.time()
+        last_scan_info["found"] = found
+        print(f"[Quét xong] tin mới: {found}")
+        if manual_chat:
+            send(manual_chat, f"✅ Quét xong. Tin mới: <b>{found}</b>.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Quét lỗi] {exc}", file=sys.stderr)
+        if manual_chat:
+            send(manual_chat, f"⚠️ Lỗi khi quét: {exc}")
+    finally:
+        scan_lock.release()
+
+
+def scanner_loop():
+    # Quét lần đầu sau 5s rồi lặp theo tần suất.
+    stop_event.wait(5)
+    while not stop_event.is_set():
+        run_scan()
+        cfg = load_config()
+        interval = max(5, int(cfg.get("scan_interval_minutes", 30))) * 60
+        # Ngủ theo từng giây để có thể đổi tần suất / dừng nhanh.
+        for _ in range(interval):
+            if stop_event.is_set():
+                return
+            time.sleep(1)
+
+
+# ---------------------------------------------------------------------------
+# Vòng lặp Telegram (long polling)
+# ---------------------------------------------------------------------------
+
+def setup_commands():
+    tg("setMyCommands", commands=[
+        {"command": "menu", "description": "Mở menu thiết lập"},
+        {"command": "scan", "description": "Quét ngay"},
+        {"command": "start", "description": "Bắt đầu"},
+    ])
+
+
+def polling_loop():
+    offset = None
+    print("[Bot] Đang lắng nghe Telegram...")
+    while not stop_event.is_set():
+        try:
+            r = requests.get(f"{API}/getUpdates",
+                             params={"offset": offset, "timeout": 30}, timeout=40)
+            data = r.json()
+        except requests.RequestException:
+            time.sleep(3)
+            continue
+        if not data.get("ok"):
+            time.sleep(3)
+            continue
+        for upd in data.get("result", []):
+            offset = upd["update_id"] + 1
+            try:
+                if "callback_query" in upd:
+                    handle_callback(upd["callback_query"])
+                elif "message" in upd:
+                    handle_message(upd["message"])
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Xử lý update lỗi] {exc}", file=sys.stderr)
+
+
+def main() -> int:
+    if not TOKEN:
+        print("Thiếu TELEGRAM_BOT_TOKEN trong .env", file=sys.stderr)
+        return 1
+    load_config()  # tạo config.json nếu chưa có
+    setup_commands()
+    if OWNER_CHAT.isdigit():
+        add_subscriber(int(OWNER_CHAT))
+    threading.Thread(target=scanner_loop, daemon=True).start()
+    try:
+        polling_loop()
+    except KeyboardInterrupt:
+        stop_event.set()
+        print("\n[Bot] Đã dừng.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Quét MỘT lượt — dùng cho GitHub Actions (cron).
+
+- Lấy cài đặt (giá, máy, bật/tắt) từ Cloudflare Worker (KV) nếu có,
+  nếu không thì đọc config.json tại chỗ.
+- Lấy danh sách người nhận từ Worker, nếu không thì dùng TELEGRAM_CHAT_ID.
+- Quét daangn bằng Playwright (scraper.py) + dịch tiếng Việt (groq_ai.py).
+- Chống trùng bằng seen.json (GitHub Actions commit lại sau mỗi lần chạy).
+
+Biến môi trường:
+  TELEGRAM_BOT_TOKEN  (bắt buộc)
+  GROQ_API_KEY        (tùy chọn, để dịch tiếng Việt)
+  TELEGRAM_CHAT_ID    (dự phòng nếu không dùng Worker)
+  WORKER_URL          (tùy chọn, vd https://daangn-bot.xxx.workers.dev)
+  WORKER_SECRET       (tùy chọn, khớp EXPORT_SECRET của Worker)
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import requests
+from playwright.sync_api import sync_playwright
+
+import scraper
+import groq_ai
+import bot  # tái dùng send(), match_phone(), match_free(), build_message()...
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+BASE_DIR = Path(__file__).resolve().parent
+WORKER_URL = os.environ.get("WORKER_URL", "").strip().rstrip("/")
+WORKER_SECRET = os.environ.get("WORKER_SECRET", "").strip()
+
+
+def fetch_remote_state() -> tuple[dict | None, list[int] | None]:
+    """Lấy config + subscribers từ Worker. Trả (None, None) nếu không có."""
+    if not WORKER_URL:
+        return None, None
+    try:
+        r = requests.get(f"{WORKER_URL}/export",
+                         params={"key": WORKER_SECRET}, timeout=20)
+        if r.status_code != 200:
+            print(f"[Worker] /export trả {r.status_code}: {r.text[:120]}", file=sys.stderr)
+            return None, None
+        data = r.json()
+        cfg = data.get("config")
+        subs = data.get("subscribers")
+        subs = [int(s) for s in subs] if isinstance(subs, list) else None
+        return (cfg if isinstance(cfg, dict) else None), subs
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[Worker] lỗi lấy state: {exc}", file=sys.stderr)
+        return None, None
+
+
+def resolve_config() -> dict:
+    cfg, _ = STATE
+    if cfg:
+        # Bổ sung khóa thiếu từ mặc định.
+        for k, v in bot.DEFAULT_CONFIG.items():
+            cfg.setdefault(k, v)
+        return cfg
+    return bot.load_config()
+
+
+def resolve_subscribers() -> list[int]:
+    _, subs = STATE
+    if subs:
+        return subs
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    return [int(chat)] if chat.isdigit() else []
+
+
+def main() -> int:
+    if not bot.TOKEN:
+        print("Thiếu TELEGRAM_BOT_TOKEN.", file=sys.stderr)
+        return 1
+
+    global STATE
+    STATE = fetch_remote_state()
+
+    cfg = resolve_config()
+    targets = resolve_subscribers()
+    if not targets:
+        print("[Quét] Chưa có người nhận (đặt TELEGRAM_CHAT_ID hoặc /start trên bot).")
+        return 0
+
+    seen = bot.load_seen()
+    ai_on = bool(cfg.get("use_ai") and bot.GROQ_KEY)
+    ai_budget = int(cfg.get("ai_max_calls", 30))
+    found = 0
+    processed: set[str] = set()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(
+            user_agent=scraper.USER_AGENT,
+            locale="ko-KR",
+            extra_http_headers={"Accept-Language": "ko-KR,ko;q=0.9"},
+        )
+        page = ctx.new_page()
+
+        for region in cfg.get("regions", []):
+            rid = str(region.get("id"))
+            rname = region.get("name", "")
+
+            # 1) Điện thoại theo từ khóa
+            for watch in cfg.get("watch", []):
+                try:
+                    items = scraper.scrape_keyword(page, rid, rname, watch["keyword"])
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [Lỗi] {watch['keyword']} @ {rname}: {exc}", file=sys.stderr)
+                    continue
+                for it in items:
+                    if it["id"] in processed:
+                        continue
+                    cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
+                    if not bot.match_phone(it, watch, cfg, cond):
+                        continue
+                    processed.add(it["id"])
+                    if it["id"] in seen:
+                        continue
+                    vi = None
+                    if ai_on and ai_budget > 0:
+                        vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"))
+                        if vi:
+                            ai_budget -= 1
+                    msg = bot.build_message(it, cond, watch["keyword"], False, vi)
+                    found += 1
+                    for t in targets:
+                        bot.send(t, msg)
+                    seen.add(it["id"])
+                    time.sleep(0.4)
+
+            # 2) Đồ điện tử miễn phí
+            if cfg.get("free_electronics"):
+                try:
+                    free_items = scraper.scrape_free(page, rid, rname)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
+                    free_items = []
+                for it in free_items:
+                    if it["id"] in processed:
+                        continue
+                    cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
+                    if not bot.match_free(it, cfg, cond):
+                        continue
+                    processed.add(it["id"])
+                    if it["id"] in seen:
+                        continue
+                    vi = None
+                    if ai_on and ai_budget > 0:
+                        vi = groq_ai.describe_vi(it, cond, bot.GROQ_KEY, cfg.get("ai_model"), is_free=True)
+                        if vi:
+                            ai_budget -= 1
+                    msg = bot.build_message(it, cond, "나눔", True, vi)
+                    found += 1
+                    for t in targets:
+                        bot.send(t, msg)
+                    seen.add(it["id"])
+                    time.sleep(0.4)
+
+        browser.close()
+
+    bot.save_seen(seen)
+    print(f"[Quét xong] Tin mới gửi đi: {found}")
+    return 0
+
+
+STATE: tuple[dict | None, list[int] | None] = (None, None)
+
+if __name__ == "__main__":
+    raise SystemExit(main())

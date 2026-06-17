@@ -1,0 +1,32 @@
+{
+  "regions": [
+    { "id": 6035, "name": "역삼동" },
+    { "id": 355, "name": "신림동" },
+    { "id": 6052, "name": "마곡동" },
+    { "id": 6543, "name": "송도동" },
+    { "id": 1766, "name": "봉담읍" },
+    { "id": 1604, "name": "별내동" },
+    { "id": 4245, "name": "배곧동" },
+    { "id": 4656, "name": "옥정동" },
+    { "id": 2134, "name": "오창읍" },
+    { "id": 2292, "name": "불당동" },
+    { "id": 2333, "name": "배방읍" },
+    { "id": 3662, "name": "물금읍" },
+    { "id": 2899, "name": "고흥읍" }
+  ],
+  "watch": [
+    { "keyword": "아이폰 15", "min_price": 200000, "max_price": 750000 },
+    { "keyword": "아이폰 14", "min_price": 150000, "max_price": 550000 },
+    { "keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000 }
+  ],
+  "free_electronics": true,
+  "scan_interval_minutes": 30,
+  "headless": true,
+  "skip_sold": true,
+  "skip_reserved": true,
+  "skip_broken": true,
+  "use_ai": true,
+  "ai_model": "llama-3.3-70b-versatile",
+  "ai_max_calls": 30,
+  "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"]
+}

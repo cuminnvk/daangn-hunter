@@ -1,0 +1,463 @@
+/**
+ * Daangn Phone Hunter — Cloudflare Worker (menu Telegram 24/7).
+ *
+ * Vai trò:
+ *  - Nhận webhook Telegram, hiển thị MENU tương tác (đặt giá, thêm/bớt máy,
+ *    bật/tắt đồ miễn phí, đổi tần suất, cài đặt lọc...).
+ *  - Lưu cài đặt + danh sách người nhận vào KV (binding BOT_KV).
+ *  - Nút "Quét ngay" gọi GitHub Actions (repository_dispatch) chạy Playwright.
+ *  - Cung cấp GET /export?key=SECRET cho GitHub Actions lấy cài đặt.
+ *
+ * Biến môi trường (wrangler.toml [vars] / secret):
+ *  BOT_TOKEN       (bắt buộc) token Telegram
+ *  EXPORT_SECRET   (bắt buộc) chuỗi bí mật, khớp WORKER_SECRET bên Actions
+ *  GH_TOKEN        (tùy chọn) PAT GitHub có quyền "repo" để bấm Quét ngay
+ *  GH_REPO         (tùy chọn) "user/ten-repo"
+ *  GROQ_API_KEY    (tùy chọn) để dịch tên máy Việt -> Hàn khi thêm máy
+ * KV binding: BOT_KV
+ */
+
+const DEFAULT_CONFIG = {
+  regions: [
+    { id: 6035, name: "역삼동" },
+    { id: 355, name: "신림동" },
+    { id: 6052, name: "마곡동" },
+    { id: 6543, name: "송도동" },
+    { id: 1766, name: "봉담읍" },
+    { id: 1604, name: "별내동" },
+    { id: 4245, name: "배곧동" },
+    { id: 2292, name: "불당동" },
+    { id: 3662, name: "물금읍" },
+    { id: 2899, name: "고흥읍" },
+  ],
+  watch: [
+    { keyword: "아이폰 15", min_price: 200000, max_price: 750000 },
+    { keyword: "아이폰 14", min_price: 150000, max_price: 550000 },
+    { keyword: "갤럭시 S24", min_price: 200000, max_price: 650000 },
+  ],
+  free_electronics: true,
+  scan_interval_minutes: 30,
+  skip_sold: true,
+  skip_reserved: true,
+  skip_broken: true,
+  use_ai: true,
+  ai_model: "llama-3.3-70b-versatile",
+  ai_max_calls: 30,
+  exclude_words: ["부품", "수리용", "잠금", "아이클라우드"],
+};
+
+const PRESETS = [
+  ["iPhone 16", "아이폰 16"], ["iPhone 15", "아이폰 15"], ["iPhone 14", "아이폰 14"],
+  ["iPhone 13", "아이폰 13"], ["iPhone 12", "아이폰 12"], ["iPhone SE", "아이폰 SE"],
+  ["Galaxy S24", "갤럭시 S24"], ["Galaxy S23", "갤럭시 S23"], ["Galaxy Z Flip", "갤럭시 Z 플립"],
+  ["Galaxy Z Fold", "갤럭시 Z 폴드"], ["Galaxy Note", "갤럭시 노트"],
+  ["iPad", "아이패드"], ["Galaxy Tab", "갤럭시탭"], ["MacBook", "맥북"],
+  ["AirPods", "에어팟"], ["Apple Watch", "애플워치"],
+];
+const INTERVALS = [10, 15, 30, 60, 120];
+
+// --------------------------------------------------------------------------
+// KV helpers
+// --------------------------------------------------------------------------
+async function getConfig(env) {
+  const raw = await env.BOT_KV.get("config");
+  let cfg = raw ? JSON.parse(raw) : {};
+  for (const k of Object.keys(DEFAULT_CONFIG)) {
+    if (cfg[k] === undefined) cfg[k] = DEFAULT_CONFIG[k];
+  }
+  return cfg;
+}
+async function saveConfig(env, cfg) {
+  await env.BOT_KV.put("config", JSON.stringify(cfg));
+}
+async function getSubs(env) {
+  const raw = await env.BOT_KV.get("subscribers");
+  return raw ? JSON.parse(raw) : [];
+}
+async function addSub(env, chatId) {
+  const subs = await getSubs(env);
+  if (!subs.includes(chatId)) {
+    subs.push(chatId);
+    await env.BOT_KV.put("subscribers", JSON.stringify(subs));
+  }
+}
+async function getPending(env, chatId) {
+  const raw = await env.BOT_KV.get("pending:" + chatId);
+  return raw ? JSON.parse(raw) : null;
+}
+async function setPending(env, chatId, obj) {
+  await env.BOT_KV.put("pending:" + chatId, JSON.stringify(obj), { expirationTtl: 600 });
+}
+async function clearPending(env, chatId) {
+  await env.BOT_KV.delete("pending:" + chatId);
+}
+
+// --------------------------------------------------------------------------
+// Telegram API
+// --------------------------------------------------------------------------
+async function tg(env, method, params) {
+  const r = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return r.json();
+}
+const send = (env, chatId, text, markup) =>
+  tg(env, "sendMessage", {
+    chat_id: chatId, text, parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(markup ? { reply_markup: markup } : {}),
+  });
+const edit = (env, chatId, msgId, text, markup) =>
+  tg(env, "editMessageText", {
+    chat_id: chatId, message_id: msgId, text, parse_mode: "HTML",
+    disable_web_page_preview: true,
+    ...(markup ? { reply_markup: markup } : {}),
+  });
+const answer = (env, id, text) =>
+  tg(env, "answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
+
+const kb = (rows) => ({ inline_keyboard: rows });
+const btn = (text, data) => ({ text, callback_data: data });
+
+// --------------------------------------------------------------------------
+// Tiện ích số
+// --------------------------------------------------------------------------
+function parsePrice(text) {
+  let t = text.replace(/,/g, "").replace(/\s/g, "").replace(/원/g, "").toLowerCase();
+  if (t.includes("만")) {
+    const man = t.replace("만", "");
+    if (man === "") return null;
+    const v = parseFloat(man);
+    return isNaN(v) ? null : Math.round(v * 10000);
+  }
+  const v = parseFloat(t);
+  if (isNaN(v)) return null;
+  return v <= 1000 ? Math.round(v) * 10000 : Math.round(v);
+}
+function won(v) {
+  const s = v.toLocaleString("en-US");
+  return v >= 10000 ? `${s}원 (${Math.floor(v / 10000)}만)` : `${s}원`;
+}
+const esc = (s) =>
+  String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// --------------------------------------------------------------------------
+// MENU
+// --------------------------------------------------------------------------
+function mainMenu(cfg) {
+  const free = cfg.free_electronics ? "BẬT ✅" : "TẮT ⬜";
+  return kb([
+    [btn("🔍 Quét ngay", "scan")],
+    [btn("💰 Giá & máy săn", "watch")],
+    [btn(`🎁 Đồ điện tử miễn phí: ${free}`, "togglefree")],
+    [btn(`⏱ Tần suất: ${cfg.scan_interval_minutes} phút`, "interval")],
+    [btn("⚙️ Cài đặt lọc", "settings")],
+    [btn("📊 Trạng thái", "status")],
+  ]);
+}
+function mainText(cfg) {
+  return (
+    "🥕 <b>Daangn Phone Hunter</b>\n\n" +
+    `📱 Đang săn: <b>${cfg.watch.length}</b> dòng máy\n` +
+    `🌍 Khu vực: <b>${cfg.regions.length}</b>\n` +
+    `⏱ Quét mỗi <b>${cfg.scan_interval_minutes}</b> phút\n\n` +
+    "Chọn một mục bên dưới:"
+  );
+}
+function watchMenu(cfg) {
+  const rows = cfg.watch.map((w, i) => {
+    const label = w.max_price ? `${w.keyword}  ≤ ${Math.floor(w.max_price / 10000)}만` : w.keyword;
+    return [btn(`📱 ${label}`, `w:${i}`)];
+  });
+  rows.push([btn("➕ Thêm máy", "addmenu")]);
+  rows.push([btn("⬅️ Về menu chính", "home")]);
+  return kb(rows);
+}
+function watchDetail(idx) {
+  return kb([
+    [btn("💵 Đặt giá tối đa", `setmax:${idx}`)],
+    [btn("💵 Đặt giá tối thiểu", `setmin:${idx}`)],
+    [btn("🗑 Xóa máy này", `del:${idx}`)],
+    [btn("⬅️ Quay lại", "watch")],
+  ]);
+}
+function addMenu() {
+  const rows = [];
+  let row = [];
+  PRESETS.forEach(([label], i) => {
+    row.push(btn(label, `add:${i}`));
+    if (row.length === 2) { rows.push(row); row = []; }
+  });
+  if (row.length) rows.push(row);
+  rows.push([btn("⌨️ Gõ tên khác (Hàn/Việt)", "addcustom")]);
+  rows.push([btn("⬅️ Quay lại", "watch")]);
+  return kb(rows);
+}
+function intervalMenu(cfg) {
+  const rows = INTERVALS.map((m) => [
+    btn((m === cfg.scan_interval_minutes ? "● " : "") + `${m} phút`, `int:${m}`),
+  ]);
+  rows.push([btn("⬅️ Về menu chính", "home")]);
+  return kb(rows);
+}
+function settingsMenu(cfg) {
+  const m = (v) => (v ? "✅" : "⬜");
+  return kb([
+    [btn(`${m(cfg.skip_broken)} Bỏ máy hỏng/lỗi`, "t:skip_broken")],
+    [btn(`${m(cfg.skip_sold)} Bỏ tin đã bán`, "t:skip_sold")],
+    [btn(`${m(cfg.skip_reserved)} Bỏ tin đang giữ chỗ`, "t:skip_reserved")],
+    [btn(`${m(cfg.use_ai)} AI dịch & đánh giá (Groq)`, "t:use_ai")],
+    [btn("⬅️ Về menu chính", "home")],
+  ]);
+}
+
+// --------------------------------------------------------------------------
+// Dịch tên máy Việt -> từ khóa Hàn (Groq, tùy chọn)
+// --------------------------------------------------------------------------
+async function viToKorean(env, text) {
+  const hasKorean = /[\uac00-\ud7a3]/.test(text);
+  if (hasKorean || !env.GROQ_API_KEY) return text;
+  try {
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: "Trả về DUY NHẤT từ khóa tìm kiếm tiếng Hàn cho tên thiết bị, không giải thích." },
+          { role: "user", content: `Tên thiết bị: ${text}` },
+        ],
+        temperature: 0, max_tokens: 30,
+      }),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      return (d.choices[0].message.content || text).trim().replace(/^"|"$/g, "");
+    }
+  } catch (_) {}
+  return text;
+}
+
+// --------------------------------------------------------------------------
+// Gọi GitHub Actions chạy quét ngay
+// --------------------------------------------------------------------------
+async function triggerScan(env) {
+  if (!env.GH_TOKEN || !env.GH_REPO) return false;
+  const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/dispatches`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.GH_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "daangn-bot-worker",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ event_type: "scan" }),
+  });
+  return r.status === 204;
+}
+
+// --------------------------------------------------------------------------
+// Xử lý callback (nút bấm)
+// --------------------------------------------------------------------------
+async function handleCallback(env, cb) {
+  const data = cb.data || "";
+  const chatId = cb.message.chat.id;
+  const msgId = cb.message.message_id;
+  await addSub(env, chatId);
+  const cfg = await getConfig(env);
+
+  if (data === "home") { await answer(env, cb.id); return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg)); }
+  if (data === "watch") { await answer(env, cb.id); return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:", watchMenu(cfg)); }
+  if (data === "addmenu") { await answer(env, cb.id); return edit(env, chatId, msgId, "➕ <b>Thêm máy cần săn</b>\nChọn mẫu hoặc gõ tên:", addMenu()); }
+  if (data === "settings") { await answer(env, cb.id); return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg)); }
+  if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
+
+  if (data === "status") {
+    await answer(env, cb.id);
+    const last = (await env.BOT_KV.get("last_scan")) || "chưa quét";
+    const txt =
+      "📊 <b>Trạng thái</b>\n\n" +
+      `Lần quét gần nhất: ${last}\n` +
+      `AI: ${cfg.use_ai ? "bật" : "tắt"}\n` +
+      `Đồ miễn phí: ${cfg.free_electronics ? "bật" : "tắt"}\n` +
+      `Tần suất: ${cfg.scan_interval_minutes} phút`;
+    return edit(env, chatId, msgId, txt, kb([[btn("⬅️ Về menu chính", "home")]]));
+  }
+
+  if (data === "togglefree") {
+    cfg.free_electronics = !cfg.free_electronics;
+    await saveConfig(env, cfg);
+    await answer(env, cb.id, "Đã cập nhật");
+    return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg));
+  }
+
+  if (data === "scan") {
+    const ok = await triggerScan(env);
+    await answer(env, cb.id, ok ? "Đã kích hoạt quét!" : "Sẽ quét ở lần kế tiếp");
+    const note = ok
+      ? "🔍 Đã kích hoạt quét trên GitHub Actions — kết quả sẽ tới trong vài phút."
+      : "🔍 Chưa cấu hình GH_TOKEN/GH_REPO nên không quét ngay được. Bot vẫn tự quét theo lịch.";
+    return edit(env, chatId, msgId, note, kb([[btn("⬅️ Về menu chính", "home")]]));
+  }
+
+  if (data.startsWith("int:")) {
+    cfg.scan_interval_minutes = parseInt(data.split(":")[1], 10);
+    await saveConfig(env, cfg);
+    await answer(env, cb.id, "Đã đổi");
+    return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg));
+  }
+
+  if (data.startsWith("t:")) {
+    const f = data.split(":")[1];
+    cfg[f] = !cfg[f];
+    await saveConfig(env, cfg);
+    await answer(env, cb.id, "Đã đổi");
+    return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg));
+  }
+
+  if (data.startsWith("w:")) {
+    const idx = parseInt(data.split(":")[1], 10);
+    const w = cfg.watch[idx];
+    await answer(env, cb.id);
+    if (!w) return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>", watchMenu(cfg));
+    const txt =
+      `📱 <b>${esc(w.keyword)}</b>\n\n` +
+      `Giá tối thiểu: ${w.min_price ? won(w.min_price) : "không đặt"}\n` +
+      `Giá tối đa: ${w.max_price ? won(w.max_price) : "không đặt"}`;
+    return edit(env, chatId, msgId, txt, watchDetail(idx));
+  }
+
+  if (data.startsWith("del:")) {
+    const idx = parseInt(data.split(":")[1], 10);
+    const removed = cfg.watch.splice(idx, 1)[0];
+    await saveConfig(env, cfg);
+    await answer(env, cb.id, removed ? `Đã xóa ${removed.keyword}` : "");
+    return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:", watchMenu(cfg));
+  }
+
+  if (data.startsWith("setmax:") || data.startsWith("setmin:")) {
+    const idx = parseInt(data.split(":")[1], 10);
+    const kind = data.startsWith("setmax") ? "max" : "min";
+    await setPending(env, chatId, { action: "set" + kind, idx });
+    await answer(env, cb.id);
+    return send(env, chatId, `💵 Gửi mức giá ${kind} (ví dụ: <b>700000</b> hoặc <b>70만</b>):`);
+  }
+
+  if (data.startsWith("add:")) {
+    const i = parseInt(data.split(":")[1], 10);
+    const kwd = PRESETS[i][1];
+    if (cfg.watch.some((w) => w.keyword === kwd)) {
+      await answer(env, cb.id, "Đã có rồi");
+    } else {
+      cfg.watch.push({ keyword: kwd, min_price: 0, max_price: 700000 });
+      await saveConfig(env, cfg);
+      await answer(env, cb.id, `Đã thêm ${kwd}`);
+    }
+    return edit(env, chatId, msgId, "💰 <b>Máy đang săn</b>\n\nBấm vào một máy để đặt giá hoặc xóa:", watchMenu(cfg));
+  }
+
+  if (data === "addcustom") {
+    await setPending(env, chatId, { action: "addkw" });
+    await answer(env, cb.id);
+    return send(env, chatId, "⌨️ Gõ tên máy (tiếng Hàn tốt nhất, vd <b>아이폰 13 미니</b>). Gõ tiếng Việt thì AI sẽ tự chuyển.");
+  }
+
+  await answer(env, cb.id);
+}
+
+// --------------------------------------------------------------------------
+// Xử lý tin nhắn văn bản
+// --------------------------------------------------------------------------
+async function handleMessage(env, msg) {
+  const chatId = msg.chat.id;
+  const text = (msg.text || "").trim();
+  await addSub(env, chatId);
+
+  if (text === "/start" || text === "/menu") {
+    await clearPending(env, chatId);
+    const cfg = await getConfig(env);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+  if (text === "/scan") {
+    const ok = await triggerScan(env);
+    return send(env, chatId, ok ? "🔍 Đã kích hoạt quét!" : "🔍 Bot sẽ quét theo lịch (chưa cấu hình quét ngay).");
+  }
+
+  const state = await getPending(env, chatId);
+  if (!state) {
+    const cfg = await getConfig(env);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+
+  const cfg = await getConfig(env);
+  if (state.action === "setmax" || state.action === "setmin") {
+    const price = parsePrice(text);
+    if (price === null) return send(env, chatId, "⚠️ Không hiểu giá. Gửi lại số (vd 700000 hoặc 70만):");
+    const w = cfg.watch[state.idx];
+    if (w) {
+      if (state.action === "setmax") w.max_price = price;
+      else w.min_price = price;
+      await saveConfig(env, cfg);
+    }
+    await clearPending(env, chatId);
+    await send(env, chatId, `✅ Đã đặt giá ${won(price)}.`);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+
+  if (state.action === "addkw") {
+    const kwd = await viToKorean(env, text);
+    if (cfg.watch.some((w) => w.keyword === kwd)) {
+      await send(env, chatId, "Máy này đã có trong danh sách.");
+    } else {
+      cfg.watch.push({ keyword: kwd, min_price: 0, max_price: 700000 });
+      await saveConfig(env, cfg);
+      await send(env, chatId, `✅ Đã thêm: <b>${esc(kwd)}</b> (giá tối đa 70만, sửa trong menu).`);
+    }
+    await clearPending(env, chatId);
+    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+  }
+}
+
+// --------------------------------------------------------------------------
+// Entry point
+// --------------------------------------------------------------------------
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    // GitHub Actions lấy cài đặt + người nhận
+    if (url.pathname === "/export") {
+      if (url.searchParams.get("key") !== env.EXPORT_SECRET) {
+        return new Response("forbidden", { status: 403 });
+      }
+      const [config, subscribers] = await Promise.all([getConfig(env), getSubs(env)]);
+      return Response.json({ config, subscribers });
+    }
+
+    // Actions báo lại thời điểm quét xong (tùy chọn)
+    if (url.pathname === "/ping" && request.method === "POST") {
+      if (url.searchParams.get("key") !== env.EXPORT_SECRET) {
+        return new Response("forbidden", { status: 403 });
+      }
+      await env.BOT_KV.put("last_scan", new Date().toISOString());
+      return new Response("ok");
+    }
+
+    // Webhook Telegram
+    if (request.method === "POST") {
+      let update;
+      try { update = await request.json(); } catch (_) { return new Response("bad", { status: 400 }); }
+      try {
+        if (update.callback_query) await handleCallback(env, update.callback_query);
+        else if (update.message) await handleMessage(env, update.message);
+      } catch (e) {
+        console.log("Lỗi xử lý update:", e);
+      }
+      return new Response("ok");
+    }
+
+    return new Response("Daangn bot worker đang chạy.");
+  },
+};

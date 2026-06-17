@@ -1,0 +1,22 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "daangn-bot"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# KV lưu cài đặt, người nhận, trạng thái.
+# Tạo bằng:  npx wrangler kv namespace create BOT_KV
+# rồi dán id nhận được vào dòng dưới.
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "00e066114aab46368000afb2d6df3dd7"
+
+# Biến công khai (không bí mật) có thể đặt ở đây.
+# Repo GitHub để bấm "Quét ngay" (vd "tenban/daangn-hunter").
+[vars]
+GH_REPO = ""
+
+# CÁC SECRET (đặt bằng lệnh, KHÔNG ghi vào file này):
+#   npx wrangler secret put BOT_TOKEN       # token Telegram
+#   npx wrangler secret put EXPORT_SECRET   # chuỗi bí mật tự đặt (khớp WORKER_SECRET ở GitHub)
+#   npx wrangler secret put GH_TOKEN        # (tùy chọn) PAT GitHub quyền repo -> bấm Quét ngay
+#   npx wrangler secret put GROQ_API_KEY    # (tùy chọn) dịch tên máy Việt -> Hàn

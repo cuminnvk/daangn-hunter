@@ -1,0 +1,15 @@
+# Bí mật & trạng thái runtime
+.env
+subscribers.json
+worker/.export_secret.txt
+worker/node_modules/
+worker/.wrangler/
+
+# Lưu ý: seen.json ĐƯỢC commit để GitHub Actions giữ trạng thái chống trùng.
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

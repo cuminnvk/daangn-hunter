@@ -50,15 +50,6 @@ jobs:
           FORCE_SCAN: ${{ (github.event_name == 'workflow_dispatch' || github.event.client_payload.manual == true) && '1' || '0' }}
         run: python scan_once.py
 
-      - name: Báo Worker đã quét xong (tùy chọn)
-        env:
-          WORKER_URL: ${{ secrets.WORKER_URL }}
-          WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
-        run: |
-          if [ -n "$WORKER_URL" ]; then
-            curl -s -X POST "$WORKER_URL/ping?key=$WORKER_SECRET" || true
-          fi
-
       - name: Commit seen state
         run: |
           git config user.name "github-actions[bot]"

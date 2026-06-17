@@ -36,16 +36,17 @@ const DEFAULT_CONFIG = {
     { keyword: "갤럭시 S24", min_price: 200000, max_price: 650000 },
   ],
   // Săn MỌI loại máy trong khoảng giá này (không cần thêm từng máy).
-  phone_min_price: 20000,
-  phone_max_price: 60000,
-  phone_keywords: ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
-  strict_good: true,
-  min_battery_percent: 80,
+  phone_min_price: 0,
+  phone_max_price: 500000,
+  phone_keywords: ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
+  strict_good: false,
+  min_battery_percent: 70,
   phones_only: true,
-  free_limit: 20,
-  phone_limit: 20,
-  send_delay_seconds: 10,
+  free_limit: 10,
+  phone_limit: 50,
+  send_delay_seconds: 2,
   digest_mode: false,
+  send_scan_summary: true,
   quiet_hours_enabled: false,
   quiet_start_hour: 23,
   quiet_end_hour: 7,
@@ -63,6 +64,7 @@ const DEFAULT_CONFIG = {
   ai_model: "llama-3.3-70b-versatile",
   ai_max_calls: 30,
   exclude_words: ["부품", "수리용", "잠금", "아이클라우드"],
+  listing_max_age_hours: 168,
 };
 
 const PRESETS = [
@@ -75,7 +77,7 @@ const PRESETS = [
 ];
 const INTERVALS = [10, 15, 30, 60, 120];
 // Khoảng giá gợi ý nhanh (won): [từ, đến]
-const PRICE_PRESETS = [[0, 30000], [20000, 60000], [50000, 100000], [100000, 200000], [0, 300000]];
+const PRICE_PRESETS = [[0, 60000], [0, 150000], [0, 300000], [0, 500000], [100000, 700000]];
 
 // --------------------------------------------------------------------------
 // KV helpers
@@ -441,9 +443,15 @@ async function handleCallback(env, cb) {
   if (data === "status") {
     await answer(env, cb.id);
     const last = (await env.BOT_KV.get("last_scan")) || "chưa quét";
+    const lastStatsRaw = await env.BOT_KV.get("last_scan_stats");
+    const lastStats = lastStatsRaw ? JSON.parse(lastStatsRaw) : null;
+    const statLine = lastStats
+      ? `Tin mới lần trước: ${lastStats.found || 0} (free ${lastStats.free || 0}, máy ${lastStats.phone || 0})\n`
+      : "";
     const txt =
       "📊 <b>Trạng thái</b>\n\n" +
       `Lần quét gần nhất: ${last}\n` +
+      statLine +
       `AI: ${cfg.use_ai ? "bật" : "tắt"}\n` +
       `Đồ miễn phí: ${cfg.free_electronics ? "bật" : "tắt"}\n` +
       `Tần suất: ${cfg.scan_interval_minutes} phút`;
@@ -695,7 +703,10 @@ export default {
       if (url.searchParams.get("key") !== env.EXPORT_SECRET) {
         return new Response("forbidden", { status: 403 });
       }
+      let stats = {};
+      try { stats = await request.json(); } catch (_) {}
       await env.BOT_KV.put("last_scan", new Date().toISOString());
+      await env.BOT_KV.put("last_scan_stats", JSON.stringify(stats || {}));
       return new Response("ok");
     }
 

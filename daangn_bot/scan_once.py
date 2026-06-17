@@ -57,6 +57,20 @@ def save_last_run_ts(ts: float) -> None:
     )
 
 
+def notify_worker_scan_done(found: int, free_count: int, phone_count: int) -> None:
+    if not WORKER_URL or not WORKER_SECRET:
+        return
+    try:
+        requests.post(
+            f"{WORKER_URL}/ping",
+            params={"key": WORKER_SECRET},
+            json={"found": found, "free": free_count, "phone": phone_count},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        print(f"[Worker] lỗi báo scan xong: {exc}", file=sys.stderr)
+
+
 def fetch_remote_state() -> tuple[dict | None, list[int] | None]:
     """Lấy config + subscribers từ Worker. Trả (None, None) nếu không có."""
     if not WORKER_URL:
@@ -281,8 +295,9 @@ def main() -> int:
 
     bot.save_seen(seen)
     save_last_run_ts(time.time())
+    notify_worker_scan_done(found, free_count, phone_count)
     print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")
-    if FORCE_SCAN:
+    if FORCE_SCAN or cfg.get("send_scan_summary", True):
         for t in targets:
             bot.send(t, f"✅ Quét xong. Tin mới: <b>{found}</b> (free {free_count}, máy {phone_count}).")
     return 0

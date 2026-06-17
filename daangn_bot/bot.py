@@ -937,7 +937,9 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
     vung = clean_vi_text((vi or {}).get("vung") or fallback_title_vi(item.get("region", "")), "Không rõ")
     nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or item.get("seller", ""), item.get("seller", ""))
     tomtat = clean_vi_text((vi or {}).get("tomtat", ""), "")
+    ket_luan = clean_vi_text((vi or {}).get("ket_luan", ""), "")
     danhgia = clean_vi_text((vi or {}).get("danhgia", ""), "")
+    diem = int((vi or {}).get("diem") or 0)
     head = "🎁 <b>[MIỄN PHÍ]</b> " if is_free else "📱 "
     title_line = f"{esc(ten_goc)} / {esc(ten)}" if ten_goc else esc(ten)
     lines = [f"{head}<b>{title_line}</b>"]
@@ -957,6 +959,8 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
     lines.append("💬 Liên hệ: nhắn qua app 당근 (Daangn)")
     if tomtat:
         lines.append(f"🧾 {esc(tomtat)}")
+    if ket_luan:
+        lines.append(f"⭐ AI: {esc(ket_luan)}{' (' + str(diem) + '/100)' if diem else ''}")
     if danhgia:
         lines.append(f"🤖 {esc(danhgia)}")
     if nguoi_ban:

@@ -29,6 +29,8 @@ def _user_prompt(item: dict, cond: dict, is_free: bool) -> str:
         '- "ten_goc": chép lại tên gốc tiếng Hàn ngắn gọn, chuẩn hóa khoảng trắng.\n'
         '- "ten": tên món đồ dịch sang tiếng Việt ngắn gọn (kèm đời máy/dung lượng nếu có).\n'
         '- "tomtat": 1 câu tóm tắt nhanh, dễ đọc, tiếng Việt.\n'
+        '- "ket_luan": 1 câu ngắn, giọng tự nhiên như người săn máy: đáng mua / không đáng mua / cần né.\n'
+        '- "diem": số nguyên từ 0-100 đánh giá độ đáng mua. 0 là rất tệ, 100 là rất ngon.\n'
         '- "danhgia": 4-6 câu tiếng Việt, cụ thể: màn hình, pin, vỏ, lỗi tiềm ẩn, '
         'mức độ hợp lý so với giá, và khuyến nghị mua/không mua.\n'
         '- "vung": dịch vùng/khu vực sang tiếng Việt, không để lại tiếng Hàn.\n'
@@ -102,6 +104,8 @@ def describe_vi(item: dict, cond: dict, key: str | Iterable[str], model: str = D
                 "ten_goc": (data.get("ten_goc") or item.get("title") or "").strip(),
                 "ten": (data.get("ten") or "").strip(),
                 "tomtat": (data.get("tomtat") or "").strip(),
+                "ket_luan": (data.get("ket_luan") or "").strip(),
+                "diem": int(data.get("diem") or 0) if str(data.get("diem") or "").isdigit() else 0,
                 "danhgia": (data.get("danhgia") or "").strip(),
                 "vung": (data.get("vung") or "").strip(),
                 "nguoi_ban": (data.get("nguoi_ban") or "").strip(),

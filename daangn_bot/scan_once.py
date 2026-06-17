@@ -150,6 +150,9 @@ def main() -> int:
         if send_delay > 0:
             time.sleep(send_delay)
 
+    print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
+    print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(
@@ -247,24 +250,23 @@ def main() -> int:
                     bot.mark_seen(seen, it["id"])
 
         if nationwide:
-            if cfg.get("free_electronics") and cfg.get("free_first", True):
-                scan_free_region(None, "전국")
-            scan_phones_region(None, "전국")
-            if cfg.get("free_electronics") and not cfg.get("free_first", True):
-                scan_free_region(None, "전국")
+            region_list = cfg.get("nationwide_regions") or cfg.get("regions", [])
         else:
-            for region in cfg.get("regions", []):
-                done_free = (not free_limit) or free_count >= free_limit
-                done_phone = (not phone_limit) or phone_count >= phone_limit
-                if done_free and done_phone:
-                    break
-                rid = str(region.get("id"))
-                rname = region.get("name", "")
-                if cfg.get("free_electronics") and cfg.get("free_first", True):
-                    scan_free_region(rid, rname)
-                scan_phones_region(rid, rname)
-                if cfg.get("free_electronics") and not cfg.get("free_first", True):
-                    scan_free_region(rid, rname)
+            region_list = cfg.get("regions", [])
+        print(f"[Config] quét {len(region_list)} vùng")
+        for region in region_list:
+            done_free = (not free_limit) or free_count >= free_limit
+            done_phone = (not phone_limit) or phone_count >= phone_limit
+            if done_free and done_phone:
+                break
+            rid = str(region.get("id"))
+            rname = region.get("name", "")
+            print(f"[Vùng] {rname}")
+            if cfg.get("free_electronics") and cfg.get("free_first", True):
+                scan_free_region(rid, rname)
+            scan_phones_region(rid, rname)
+            if cfg.get("free_electronics") and not cfg.get("free_first", True):
+                scan_free_region(rid, rname)
 
         browser.close()
 

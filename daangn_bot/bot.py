@@ -119,8 +119,24 @@ DEFAULT_CONFIG = {
     "ai_model": groq_ai.DEFAULT_MODEL,
     "ai_max_calls": 30,
     "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
-    "nationwide": True,               # quét toàn quốc (không giới hạn vùng)
+    "nationwide": True,               # quét toàn quốc (dùng danh sách vùng rộng)
     "listing_max_age_hours": 24,       # chỉ lấy tin đăng trong N giờ gần đây
+    # Danh sách vùng rộng dùng khi nationwide=True (phủ các thành phố lớn toàn quốc)
+    "nationwide_regions": [
+        {"id": "4376", "name": "서울시"}, {"id": "5834", "name": "강남구"},
+        {"id": "6035", "name": "역삼동"}, {"id": "355", "name": "신림동"},
+        {"id": "6052", "name": "마곡동"}, {"id": "6543", "name": "송도동"},
+        {"id": "1604", "name": "별내동"}, {"id": "4245", "name": "배곳동"},
+        {"id": "2292", "name": "불당동"}, {"id": "3662", "name": "물금읍"},
+        {"id": "3850", "name": "수성구"}, {"id": "3851", "name": "나서구"},
+        {"id": "3852", "name": "연수구"}, {"id": "3853", "name": "중구"},
+        {"id": "1766", "name": "등포동"}, {"id": "6400", "name": "수원시"},
+        {"id": "6500", "name": "염안시"}, {"id": "6600", "name": "용인시"},
+        {"id": "100", "name": "부산시"},  {"id": "200", "name": "대구시"},
+        {"id": "300", "name": "인천시"},  {"id": "400", "name": "대전시"},
+        {"id": "500", "name": "광주시"},  {"id": "600", "name": "울산시"},
+        {"id": "700", "name": "청주시"},  {"id": "800", "name": "제주시"},
+    ],
 }
 
 # Preset máy phổ biến cho menu "Thêm máy".
@@ -1122,27 +1138,25 @@ def run_scan(manual_chat: int | None = None):
                             mark_seen(seen, it["id"])
 
             if nationwide:
-                if cfg.get("free_electronics") and cfg.get("free_first", True):
-                    scan_free_region(None, "전국")
-                scan_phones_region(None, "전국")
-                if cfg.get("free_electronics") and not cfg.get("free_first", True):
-                    scan_free_region(None, "전국")
+                region_list = cfg.get("nationwide_regions") or cfg.get("regions", [])
             else:
-                for region in cfg.get("regions", []):
-                    if stopped or cancel_scan.is_set():
-                        stopped = True
-                        break
-                    done_free = (not free_limit) or free_count >= free_limit
-                    done_phone = (not phone_limit) or phone_count >= phone_limit
-                    if done_free and done_phone:
-                        break
-                    rid = str(region.get("id"))
-                    rname = region.get("name", "")
-                    if cfg.get("free_electronics") and cfg.get("free_first", True):
-                        scan_free_region(rid, rname)
-                    scan_phones_region(rid, rname)
-                    if cfg.get("free_electronics") and not cfg.get("free_first", True):
-                        scan_free_region(rid, rname)
+                region_list = cfg.get("regions", [])
+            for region in region_list:
+                if stopped or cancel_scan.is_set():
+                    stopped = True
+                    break
+                done_free = (not free_limit) or free_count >= free_limit
+                done_phone = (not phone_limit) or phone_count >= phone_limit
+                if done_free and done_phone:
+                    break
+                rid = str(region.get("id"))
+                rname = region.get("name", "")
+                print(f"[Quét vùng] {rname} (id={rid})")
+                if cfg.get("free_electronics") and cfg.get("free_first", True):
+                    scan_free_region(rid, rname)
+                scan_phones_region(rid, rname)
+                if cfg.get("free_electronics") and not cfg.get("free_first", True):
+                    scan_free_region(rid, rname)
 
             browser.close()
 

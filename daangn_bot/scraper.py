@@ -289,8 +289,11 @@ def _fetch(page, url: str) -> list[dict]:
         page.remove_listener("response", on_response)
 
     if not captured:
+        print(f"  [scraper] 0 kết quả API tại: {url[:120]}", file=__import__('sys').stderr)
         return []
-    return captured[-1].get("fleamarketArticles", []) or []
+    articles = captured[-1].get("fleamarketArticles", []) or []
+    print(f"  [scraper] {len(articles)} items raw tại: {url[:120]}")
+    return articles
 
 
 def scrape_keyword(page, region_id: str | None, region_name: str | None, keyword: str,

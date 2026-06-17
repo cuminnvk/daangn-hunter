@@ -14,7 +14,8 @@ DEFAULT_MODEL = "llama-3.3-70b-versatile"
 SYSTEM_PROMPT = (
     "Bạn là chuyên gia thẩm định đồ cũ trên chợ Hàn Quốc 당근마켓, nói tiếng Việt có dấu. "
     "Bạn rất nghiêm khắc: chỉ chấp nhận điện thoại ĐANG DÙNG TỐT, đúng tầm giá. "
-    "Luôn trả về JSON hợp lệ, không thêm chữ nào ngoài JSON."
+    "Luôn trả về JSON hợp lệ, không thêm chữ nào ngoài JSON. "
+    "Trong mọi trường văn bản, KHÔNG để lại chữ Hàn."
 )
 
 
@@ -25,14 +26,19 @@ def _user_prompt(item: dict, cond: dict, is_free: bool) -> str:
     return (
         f"Phân tích tin rao {loai} sau (tiếng Hàn). Trả JSON với các khóa:\n"
         '- "ten": tên món đồ dịch sang tiếng Việt ngắn gọn (kèm đời máy/dung lượng nếu có).\n'
-        '- "danhgia": 2-3 câu tiếng Việt: tình trạng máy (màn, pin, vỏ), có sửa/thay gì không, '
-        'mức độ hời so với giá. Nếu có dấu hiệu lỗi/hỏng/màn ố/chập nguồn thì CẢNH BÁO rõ.\n'
+        '- "tomtat": 1 câu tóm tắt nhanh, dễ đọc, tiếng Việt.\n'
+        '- "danhgia": 4-6 câu tiếng Việt, cụ thể: màn hình, pin, vỏ, lỗi tiềm ẩn, '
+        'mức độ hợp lý so với giá, và khuyến nghị mua/không mua.\n'
+        '- "vung": dịch vùng/khu vực sang tiếng Việt, không để lại tiếng Hàn.\n'
+        '- "nguoi_ban": dịch/tên hóa người bán sang tiếng Việt ngắn gọn (nếu không rõ thì để rỗng).\n'
         '- "la_dien_thoai": true nếu đây ĐÚNG là một chiếc điện thoại nguyên chiếc dùng được, '
         'false nếu là VỎ/ỐP/CÁP/KÍNH/PHỤ KIỆN hoặc máy hỏng/chỉ bán linh kiện.\n'
         '- "con_tot": true nếu máy còn hoạt động tốt (không chập nguồn, không ố/sọc màn, không bể nát), '
         'false nếu có hư hỏng đáng kể.\n'
         '- "bo_qua": true nếu nên BỎ QUA tin này (không phải điện thoại tốt), ngược lại false.\n\n'
         f"Tiêu đề: {item['title']}\n"
+        f"Khu vực: {item.get('region', '')}\n"
+        f"Người bán: {item.get('seller', '')}\n"
         f"Giá: {gia}\n"
         f"Pin (ước tính): {battery}\n"
         f"Mô tả: {item['content'][:900]}\n"
@@ -41,7 +47,7 @@ def _user_prompt(item: dict, cond: dict, is_free: bool) -> str:
 
 def describe_vi(item: dict, cond: dict, key: str, model: str = DEFAULT_MODEL,
                 is_free: bool = False) -> dict | None:
-    """Trả về {'ten', 'danhgia', 'la_dien_thoai', 'con_tot', 'bo_qua'} hoặc None nếu lỗi."""
+    """Trả về dict thẩm định tiếng Việt đầy đủ hoặc None nếu lỗi."""
     if not key:
         return None
     body = {
@@ -74,7 +80,10 @@ def describe_vi(item: dict, cond: dict, key: str, model: str = DEFAULT_MODEL,
             bo_qua = (la_dt is False) or (con_tot is False)
         return {
             "ten": (data.get("ten") or "").strip(),
+            "tomtat": (data.get("tomtat") or "").strip(),
             "danhgia": (data.get("danhgia") or "").strip(),
+            "vung": (data.get("vung") or "").strip(),
+            "nguoi_ban": (data.get("nguoi_ban") or "").strip(),
             "la_dien_thoai": la_dt,
             "con_tot": con_tot,
             "bo_qua": bool(bo_qua) if not is_free else False,

@@ -318,6 +318,16 @@ def fallback_title_vi(title: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def clean_vi_text(text: str, fallback: str = "") -> str:
+    """Loại chữ Hàn khỏi text để đầu ra Telegram chỉ còn tiếng Việt/Latin."""
+    t = (text or "").strip()
+    if not t:
+        return fallback
+    t = re.sub(r"[\uac00-\ud7a3]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" -,:;")
+    return t or fallback
+
+
 def deal_badge(title: str, price: int | None, is_free: bool) -> str | None:
     """Ước lượng nhanh deal hời theo model phổ biến."""
     if is_free:
@@ -887,7 +897,11 @@ def match_free(item: dict, cfg: dict, cond: dict) -> bool:
 
 def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict | None) -> str:
     esc = html.escape
-    ten = (vi or {}).get("ten") or fallback_title_vi(item["title"])
+    ten = clean_vi_text((vi or {}).get("ten") or fallback_title_vi(item["title"]), "Điện thoại")
+    vung = clean_vi_text((vi or {}).get("vung") or item.get("region", ""), "Không rõ")
+    nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or item.get("seller", ""), "")
+    tomtat = clean_vi_text((vi or {}).get("tomtat", ""), "")
+    danhgia = clean_vi_text((vi or {}).get("danhgia", ""), "")
     head = "🎁 <b>[MIỄN PHÍ]</b> " if is_free else "📱 "
     lines = [f"{head}<b>{esc(ten)}</b>"]
     if not is_free:
@@ -897,22 +911,20 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
     hot = deal_badge(item.get("title", ""), item.get("price"), is_free)
     if hot:
         lines.append(hot)
-    lines.append(f"📍 {esc(item['region'])}")
+    lines.append(f"📍 {esc(vung)}")
     if cond["battery"] is not None:
         lines.append(f"🔋 Pin: {cond['battery']}%")
-    sig = ("  (" + ", ".join(esc(s) for s in cond["signals"]) + ")") if cond["signals"] else ""
-    lines.append(f"🩺 Tình trạng: {cond['label']}{sig}")
+    lines.append(f"🩺 Tình trạng: {cond['label']}")
     if not is_free:
         lines.append(f"🤝 Thương lượng: {scraper.detect_negotiable(item['content'])}")
-    lines.append("💬 Liên hệ: nhắn qua app 당근 (Daangn)")
-    if (vi or {}).get("danhgia"):
-        lines.append(f"🤖 {esc(vi['danhgia'])}")
-    if item["seller"]:
-        lines.append(f"👤 {esc(item['seller'])}")
+    lines.append("💬 Liên hệ: nhắn qua app Daangn")
+    if tomtat:
+        lines.append(f"🧾 {esc(tomtat)}")
+    if danhgia:
+        lines.append(f"🤖 {esc(danhgia)}")
+    if nguoi_ban:
+        lines.append(f"👤 {esc(nguoi_ban)}")
     lines.append(f"🔗 {item['link']}")
-    # Tên gốc tiếng Hàn (nhỏ) để đối chiếu
-    if (vi or {}).get("ten"):
-        lines.append(f"<i>🇰🇷 {esc(item['title'])}</i>")
     return "\n".join(lines)
 
 

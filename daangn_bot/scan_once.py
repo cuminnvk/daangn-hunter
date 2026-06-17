@@ -143,10 +143,6 @@ def main() -> int:
     kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
     processed: set[str] = set()
     digests: dict[int, list[str]] = {t: [] for t in targets}
-    gmin = int(cfg.get("phone_min_price", 0) or 0)
-    gmax = int(cfg.get("phone_max_price", 0) or 0)
-    grange = {"min_price": gmin, "max_price": gmax}
-    kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
 
     print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
     print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")

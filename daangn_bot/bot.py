@@ -121,21 +121,16 @@ DEFAULT_CONFIG = {
     "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
     "nationwide": True,               # quét toàn quốc (dùng danh sách vùng rộng)
     "listing_max_age_hours": 24,       # chỉ lấy tin đăng trong N giờ gần đây
-    # Danh sách vùng rộng dùng khi nationwide=True (phủ các thành phố lớn toàn quốc)
+    # Danh sách vùng dùng khi nationwide=True. CHỈ gồm các region id ĐÃ KIỂM CHỨNG
+    # (trùng với "regions" mặc định). Không bịa id — daangn trả rỗng nếu id sai.
     "nationwide_regions": [
-        {"id": "4376", "name": "서울시"}, {"id": "5834", "name": "강남구"},
         {"id": "6035", "name": "역삼동"}, {"id": "355", "name": "신림동"},
         {"id": "6052", "name": "마곡동"}, {"id": "6543", "name": "송도동"},
-        {"id": "1604", "name": "별내동"}, {"id": "4245", "name": "배곳동"},
-        {"id": "2292", "name": "불당동"}, {"id": "3662", "name": "물금읍"},
-        {"id": "3850", "name": "수성구"}, {"id": "3851", "name": "나서구"},
-        {"id": "3852", "name": "연수구"}, {"id": "3853", "name": "중구"},
-        {"id": "1766", "name": "등포동"}, {"id": "6400", "name": "수원시"},
-        {"id": "6500", "name": "염안시"}, {"id": "6600", "name": "용인시"},
-        {"id": "100", "name": "부산시"},  {"id": "200", "name": "대구시"},
-        {"id": "300", "name": "인천시"},  {"id": "400", "name": "대전시"},
-        {"id": "500", "name": "광주시"},  {"id": "600", "name": "울산시"},
-        {"id": "700", "name": "청주시"},  {"id": "800", "name": "제주시"},
+        {"id": "1766", "name": "봉담읍"}, {"id": "1604", "name": "별내동"},
+        {"id": "4245", "name": "배곧동"}, {"id": "4656", "name": "옥정동"},
+        {"id": "2134", "name": "오창읍"}, {"id": "2292", "name": "불당동"},
+        {"id": "2333", "name": "배방읍"}, {"id": "3662", "name": "물금읍"},
+        {"id": "2899", "name": "고흥읍"},
     ],
 }
 
@@ -594,9 +589,12 @@ def handle_callback(cb: dict):
     if data == "home":
         answer_cb(cb_id)
         return show_main(chat_id, msg_id)
-    if data == "price" or data == "watch":
+    if data == "price":
         answer_cb(cb_id)
         return show_price(chat_id, msg_id)
+    if data == "watch":
+        answer_cb(cb_id)
+        return show_watch(chat_id, msg_id)
     if data == "setrange":
         pending[chat_id] = {"action": "setrange", "msg_id": msg_id}
         answer_cb(cb_id)
@@ -630,7 +628,7 @@ def handle_callback(cb: dict):
             "📊 <b>Trạng thái</b>\n\n"
             f"Lần quét gần nhất: {tstr}\n"
             f"Tin mới lần trước: {last_scan_info['found']}\n"
-            f"AI: {'bật' if cfg.get('use_ai') and GROQ_KEY else 'tắt'}\n"
+            f"AI: {'bật' if cfg.get('use_ai') and get_groq_keys(cfg) else 'tắt'}\n"
             f"Đồ miễn phí: {'bật' if cfg.get('free_electronics') else 'tắt'}"
         )
         return edit(chat_id, msg_id, txt, kb([[btn("⬅️ Về menu chính", "home")]]))
@@ -929,7 +927,11 @@ def match_phone(item: dict, watch: dict, cfg: dict, cond: dict) -> bool:
     price = item["price"]
     if price is None:
         return False
-    if price < (watch.get("min_price", 0) or 0):
+    # Tin 0원 là đồ cho tặng (나눔) — thuộc luồng quét free, không phải săn máy bán.
+    if price <= 0:
+        return False
+    min_p = watch.get("min_price", 0) or 0
+    if price < max(1, min_p):
         return False
     mx = watch.get("max_price")
     if mx is not None and mx > 0 and price > mx:

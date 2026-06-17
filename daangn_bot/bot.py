@@ -329,6 +329,7 @@ def fallback_title_vi(title: str) -> str:
     }
     for k, v in rep.items():
         t = t.replace(k, v)
+    t = re.sub(r"[\uac00-\ud7a3]+", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -932,17 +933,15 @@ def match_free(item: dict, cfg: dict, cond: dict) -> bool:
 
 def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict | None) -> str:
     esc = html.escape
-    ten_goc = (vi or {}).get("ten_goc") or item.get("title", "")
     ten = clean_vi_text((vi or {}).get("ten") or fallback_title_vi(item["title"]), "Điện thoại")
     vung = clean_vi_text((vi or {}).get("vung") or fallback_title_vi(item.get("region", "")), "Không rõ")
-    nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or item.get("seller", ""), item.get("seller", ""))
+    nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or "", "")
     tomtat = clean_vi_text((vi or {}).get("tomtat", ""), "")
     ket_luan = clean_vi_text((vi or {}).get("ket_luan", ""), "")
     danhgia = clean_vi_text((vi or {}).get("danhgia", ""), "")
     diem = int((vi or {}).get("diem") or 0)
     head = "🎁 <b>[MIỄN PHÍ]</b> " if is_free else "📱 "
-    title_line = f"{esc(ten_goc)} / {esc(ten)}" if ten_goc else esc(ten)
-    lines = [f"{head}<b>{title_line}</b>"]
+    lines = [f"{head}<b>{esc(ten)}</b>"]
     if not is_free:
         lines.append(f"💰 {item['price']:,}원")
     else:

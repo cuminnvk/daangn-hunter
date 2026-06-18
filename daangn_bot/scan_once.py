@@ -222,8 +222,6 @@ def main() -> int:
                         skip_seen += 1; continue
                     if not bot.pass_region_filter(it, cfg):
                         skip_region += 1; continue
-                    if not scraper.is_fresh(it, max_age_hours):
-                        skip_fresh += 1; continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
                         if scraper.clearly_not_phone(it["title"], it["content"]):

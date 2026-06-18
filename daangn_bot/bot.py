@@ -1113,8 +1113,6 @@ def run_scan(manual_chat: int | None = None):
                             continue
                         if not pass_region_filter(it, cfg):
                             continue
-                        if not scraper.is_fresh(it, max_age_hours):
-                            continue
                         # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                         if cfg.get("phones_only", True):
                             if scraper.clearly_not_phone(it["title"], it["content"]):

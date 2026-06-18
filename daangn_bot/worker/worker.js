@@ -35,6 +35,10 @@ const USER_SETTINGS = {
 const FIXED_CONFIG = {
   // Từ khóa quét — chỉ điện thoại.
   phone_keywords: ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
+  // Quét thêm 번개장터 (Bunjang) vì các tin "바로구매" trong app không nằm trong API Daangn.
+  bunjang_enabled: true,
+  bunjang_limit: 60,
+  bunjang_keywords: ["아이폰", "갤럭시", "삼성 폴더폰"],
   // TẮT hoàn toàn đồ miễn phí — tuyệt đối không quét.
   free_electronics: false,
   free_first: false,

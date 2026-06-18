@@ -85,6 +85,7 @@ TELEGRAM_CHAT_ID=        # tùy chọn, cứ /start là bot tự lưu
 | `skip_reserved` | Bỏ tin **đang giữ chỗ** (예약중). Mặc định `true`. |
 | `skip_broken` | Bỏ tin **máy hỏng/lỗi**. Mặc định `true`. |
 | `broad_price_scan` | Quét thêm một lượt chỉ theo khoảng giá, giống khi lọc giá trên app, rồi bot mới lọc lại điện thoại/phụ kiện. |
+| `bunjang_enabled` | Quét thêm **번개장터/Bunjang** để bắt các tin `바로구매` không xuất hiện trong API Daangn. |
 | `listing_max_age_hours` | Chỉ lấy tin đăng hoặc được đẩy lên trong N giờ gần đây. Mặc định `48`. |
 | `free_electronics` | Quét thêm **đồ điện tử miễn phí** (나눔). Mặc định `true`. |
 | `scan_interval_minutes` | Tần suất quét tự động (phút). Mặc định `30`. |

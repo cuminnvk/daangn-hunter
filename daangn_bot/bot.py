@@ -94,6 +94,9 @@ DEFAULT_CONFIG = {
     "phone_min_price": 0,
     "phone_max_price": 600000,
     "phone_keywords": ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
+    "bunjang_enabled": True,
+    "bunjang_limit": 60,
+    "bunjang_keywords": ["아이폰", "갤럭시", "삼성 폴더폰"],
     "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
     "min_battery_percent": 70,  # pin tối thiểu nếu bật strict_good
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện

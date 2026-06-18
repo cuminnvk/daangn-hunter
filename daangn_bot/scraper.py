@@ -20,6 +20,12 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 ITEM_ID_RE = re.compile(r"-([0-9a-z]{8,})/?$")
+PHONE_MODEL_RE = re.compile(
+    r"(아이폰|iphone)\s*(se\s*\d*|\d{1,2}\s*(pro|max|plus|mini|프로|맥스|플러스|미니)?)?"
+    r"|(?:갤럭시|galaxy)\s*(s|a|m|j|z|노트|note|폴드|fold|플립|flip|폴더|그랜드|grand|와이드|wide|온)\s*[0-9a-z가-힣]*"
+    r"|(?:샤오미|홍미|레드미|redmi|pixel|픽셀)\s*[0-9a-z가-힣]*",
+    re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # Danh sách THIẾT BỊ được phép cho đồ MIỄN PHÍ — chỉ check TIÊU ĐỀ
@@ -63,13 +69,17 @@ ACCESSORY_WORDS = [
     "태블릿", "갤럭시탭", "갤탭", "아이패드", "ipad", "패드", "카플레이",
     "안드로이드오토", "픽셀블럭", "블럭",
     "노트북", "맥북", "컴퓨터", "데스크탑", "pc", "윈도우",
+    "파워뱅크", "키보드", "크롬캐스트", "공기청정기", "마사지건",
+    "체중계", "인바디", "오디오", "코딩", "살균기", "셀카봉", "삼각대",
+    "컨트롤러", "vr", "스마트톡", "차량용", "번호판", "장식", "미스트",
+    "필터", "갤럭시핏", "핏3", "핏 3",
     # Giả / trưng bày
     "목업", "모형폰", "더미", "테스트폰", "디스플레이폰",
     # Điều khiển từ xa / không phải thiết bị
     "리모컨", "리모트",
     # Tin người mua đang tìm/đổi máy, không phải tin bán máy.
     "구매해봅니다", "구매합니다", "구합니다", "구해요", "삽니다", "매입",
-    "교환원", "교환 원", "교환합니다",
+    "교환원", "교환 원", "교환합니다", "교환",
 ]
 # Từ chỉ ĐÚNG là điện thoại (máy thật).
 PHONE_WORDS = [
@@ -95,9 +105,19 @@ def is_accessory(title: str, content: str = "") -> bool:
 
 
 def looks_like_phone(title: str, content: str = "") -> bool:
-    """True nếu tin rao đúng là một chiếc điện thoại."""
-    low = (title + " " + content).lower()
-    return any(w in low for w in PHONE_WORDS)
+    """True nếu TIÊU ĐỀ cho thấy đây là một chiếc điện thoại.
+
+    Không dùng mô tả để quyết định, vì phụ kiện thường ghi "dùng cho iPhone/Galaxy"
+    trong phần mô tả và trước đây bị lọt vào bot.
+    """
+    t = (title or "").lower()
+    if PHONE_MODEL_RE.search(t):
+        return True
+    strong_title_words = [
+        "스마트폰", "휴대폰", "핸드폰", "폴더폰", "공기계", "자급제",
+        "폰 팝니다", "폰팝니다", "중고폰",
+    ]
+    return any(w in t for w in strong_title_words)
 
 
 def clearly_not_phone(title: str, content: str = "") -> bool:

@@ -330,6 +330,18 @@ async function triggerScan(env, payload = { manual: true }) {
 
 async function triggerAutoScanIfDue(env) {
   const now = Date.now();
+  // Worker cron chạy mỗi 5 phút nhưng chỉ ĐƯỢC bắn quét khi đã quá
+  // scan_interval_minutes kể từ lần bắn trước — nếu không sẽ dội dispatch
+  // liên tục khiến mọi run GitHub Actions bị hủy giữa chừng.
+  const cfg = await getConfig(env);
+  const intervalMs = Math.max(5, cfg.scan_interval_minutes || 30) * 60 * 1000;
+  const lastRaw = await env.BOT_KV.get("auto_last_dispatch");
+  const last = lastRaw ? parseInt(lastRaw, 10) : 0;
+  if (last > 0 && now - last < intervalMs) {
+    const leftMin = Math.ceil((intervalMs - (now - last)) / 60000);
+    console.log(`Auto scan chưa đến kỳ (còn ~${leftMin} phút), bỏ qua.`);
+    return false;
+  }
   const ok = await triggerScan(env, { manual: false, source: "worker_cron" });
   if (ok) {
     await env.BOT_KV.put("auto_last_dispatch", String(now));

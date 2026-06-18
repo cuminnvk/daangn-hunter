@@ -957,6 +957,7 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
     vung = clean_vi_text((vi or {}).get("vung") or fallback_title_vi(item.get("region", "")), "Không rõ")
     nguoi_ban = clean_vi_text((vi or {}).get("nguoi_ban") or "", "")
     tomtat = clean_vi_text((vi or {}).get("tomtat", ""), "")
+    mota = clean_vi_text((vi or {}).get("mota", ""), "")
     ket_luan = clean_vi_text((vi or {}).get("ket_luan", ""), "")
     danhgia = clean_vi_text((vi or {}).get("danhgia", ""), "")
     diem = int((vi or {}).get("diem") or 0)
@@ -978,6 +979,8 @@ def build_message(item: dict, cond: dict, keyword: str, is_free: bool, vi: dict 
     lines.append("💬 Liên hệ: nhắn qua app 당근 (Daangn)")
     if tomtat:
         lines.append(f"🧾 {esc(tomtat)}")
+    if mota:
+        lines.append(f"📝 {esc(mota)}")
     if ket_luan:
         lines.append(f"⭐ AI: {esc(ket_luan)}{' (' + str(diem) + '/100)' if diem else ''}")
     if danhgia:

@@ -267,8 +267,10 @@ def _parse_articles(articles: list, fallback_region: str) -> list[dict]:
     return results
 
 
-def _fetch(page, url: str) -> list[dict]:
-    """Điều hướng và bắt JSON từ API fleamarket/search."""
+def _fetch(page, url: str, max_scrolls: int = 4) -> list[dict]:
+    """Điều hướng và bắt JSON từ API fleamarket/search.
+    Cuộn xuống để kích hoạt infinite-scroll (mỗi lần ~20 item thêm).
+    """
     captured: list[dict] = []
 
     def on_response(resp):
@@ -285,15 +287,30 @@ def _fetch(page, url: str) -> list[dict]:
             if captured:
                 break
             page.wait_for_timeout(1000)
+        # Cuộn để tải thêm kết quả (infinite-scroll)
+        for _ in range(max_scrolls):
+            prev = len(captured)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(2500)
+            if len(captured) == prev:
+                break  # Không còn item mới nữa
     finally:
         page.remove_listener("response", on_response)
 
     if not captured:
-        print(f"  [scraper] 0 kết quả API tại: {url[:120]}", file=__import__('sys').stderr)
+        print(f"  [scraper] 0 kết quả API tại: {url[:120]}", file=sys.stderr)
         return []
-    articles = captured[-1].get("fleamarketArticles", []) or []
-    print(f"  [scraper] {len(articles)} items raw tại: {url[:120]}")
-    return articles
+    # Gộp và dedup tất cả articles từ mọi trang
+    all_articles: list = []
+    seen_hrefs: set = set()
+    for resp_data in captured:
+        for a in (resp_data.get("fleamarketArticles", []) or []):
+            uid = a.get("id") or a.get("href", "")
+            if uid and uid not in seen_hrefs:
+                seen_hrefs.add(uid)
+                all_articles.append(a)
+    print(f"  [scraper] {len(all_articles)} items ({len(captured)} trang) tại: {url[:80]}")
+    return all_articles
 
 
 def scrape_keyword(page, region_id: str | None, region_name: str | None, keyword: str,

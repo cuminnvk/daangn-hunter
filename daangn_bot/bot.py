@@ -1143,7 +1143,8 @@ def run_scan(manual_chat: int | None = None):
                             mark_seen(seen, it["id"])
 
             if nationwide:
-                region_list = cfg.get("nationwide_regions") or cfg.get("regions", [])
+                # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn
+                region_list = [{"id": None, "name": "전국"}]
             else:
                 region_list = cfg.get("regions", [])
             for region in region_list:
@@ -1154,9 +1155,10 @@ def run_scan(manual_chat: int | None = None):
                 done_phone = (not phone_limit) or phone_count >= phone_limit
                 if done_free and done_phone:
                     break
-                rid = str(region.get("id"))
-                rname = region.get("name", "")
-                print(f"[Quét vùng] {rname} (id={rid})")
+                rid_raw = region.get("id")
+                rid = str(rid_raw) if rid_raw is not None else None
+                rname = region.get("name") or ""
+                print(f"[Quét vùng] {rname or '전국'}")
                 if cfg.get("free_electronics") and cfg.get("free_first", True):
                     scan_free_region(rid, rname)
                 scan_phones_region(rid, rname)

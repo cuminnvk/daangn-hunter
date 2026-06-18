@@ -911,6 +911,15 @@ def handle_message(msg: dict):
 # QUÉT
 # ---------------------------------------------------------------------------
 
+def resolve_region_list(cfg: dict, nationwide: bool) -> list[dict]:
+    if nationwide:
+        regions = cfg.get("nationwide_regions") or cfg.get("regions") or []
+        if regions:
+            return regions
+        return [{"id": None, "name": "전국"}]
+    return cfg.get("regions", [])
+
+
 def match_phone(item: dict, watch: dict, cfg: dict, cond: dict) -> bool:
     status = item.get("status", "")
     if cfg.get("skip_sold", True) and status in ("Closed", "Traded"):
@@ -1164,11 +1173,7 @@ def run_scan(manual_chat: int | None = None):
                     if not handle_phone_items(items, kw):
                         return
 
-            if nationwide:
-                # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn
-                region_list = [{"id": None, "name": "전국"}]
-            else:
-                region_list = cfg.get("regions", [])
+            region_list = resolve_region_list(cfg, nationwide)
             for region in region_list:
                 if stopped or cancel_scan.is_set():
                     stopped = True

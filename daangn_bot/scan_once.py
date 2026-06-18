@@ -95,6 +95,15 @@ def resolve_subscribers() -> list[int]:
     return [int(chat)] if chat.isdigit() else []
 
 
+def resolve_region_list(cfg: dict, nationwide: bool) -> list[dict]:
+    if nationwide:
+        regions = cfg.get("nationwide_regions") or cfg.get("regions") or []
+        if regions:
+            return regions
+        return [{"id": None, "name": "전국"}]
+    return cfg.get("regions", [])
+
+
 def main() -> int:
     if not bot.TOKEN:
         print("Thiếu TELEGRAM_BOT_TOKEN.", file=sys.stderr)
@@ -134,7 +143,7 @@ def main() -> int:
     phone_limit = int(cfg.get("phone_limit", 20) or 0)
     seen_ttl = int(cfg.get("seen_ttl_hours", 168) or 168)
     send_delay = float(cfg.get("send_delay_seconds", 3) or 0)
-    digest_mode = bool(cfg.get("digest_mode", False))
+    digest_mode = bool(cfg.get("digest_mode", False)) and not FORCE_SCAN
     nationwide = bool(cfg.get("nationwide", True))
     max_age_hours = int(cfg.get("listing_max_age_hours", 168) or 168)
     max_scrolls = int(cfg.get("scan_max_scrolls", 8) or 8)
@@ -273,11 +282,7 @@ def main() -> int:
                 if not handle_phone_items(items, kw):
                     return
 
-        if nationwide:
-            # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn
-            region_list = [{"id": None, "name": "전국"}]
-        else:
-            region_list = cfg.get("regions", [])
+        region_list = resolve_region_list(cfg, nationwide)
         print(f"[Config] quét {len(region_list)} vùng")
         for region in region_list:
             done_free = (not free_limit) or free_count >= free_limit

@@ -91,25 +91,25 @@ DEFAULT_CONFIG = {
         {"keyword": "갤럭시 S24", "min_price": 200000, "max_price": 650000},
     ],
     # Săn MOI loại máy trong khoảng giá này (không cần thêm từng máy).
-    "phone_min_price": 20000,
-    "phone_max_price": 60000,
-    "phone_keywords": ["아이폰", "갤럭시", "휴대폰", "스마트폰"],
+    "phone_min_price": 0,
+    "phone_max_price": 600000,
+    "phone_keywords": ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
     "strict_good": True,        # chỉ máy tốt: loại chập nguồn/ố màn/bể nát
-    "min_battery_percent": 80,  # pin tối thiểu nếu bật strict_good
+    "min_battery_percent": 70,  # pin tối thiểu nếu bật strict_good
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
-    "free_limit": 20,           # số tin đồ free tối đa mỗi lượt quét
-    "phone_limit": 20,          # số tin điện thoại tối đa mỗi lượt quét
-    "send_delay_seconds": 10,   # giãn cách gửi từng tin để tránh lỗi
+    "free_limit": 0,            # TẮT đồ free — chỉ săn điện thoại
+    "phone_limit": 40,          # số tin điện thoại tối đa mỗi lượt quét
+    "send_delay_seconds": 8,    # giãn cách gửi từng tin để tránh lỗi
     "digest_mode": False,       # gộp nhiều tin thành vài bản tin lớn
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
     "quiet_end_hour": 7,
-    "seen_ttl_hours": 48,       # tin đã quét sẽ không hiện lại trong 2 ngày
+    "seen_ttl_hours": 48,       # tin đã gửi không hiện lại trong 48h
     "region_filter_enabled": False,
     "region_filter_terms": [],  # ví dụ ["역삼", "송도"]
     "groq_api_keys": [],        # nhiều key Groq nhập từ Telegram, mỗi key 1 dòng
-    "free_electronics": True,
-    "free_first": True,         # ưu tiên quét đồ free trước
+    "free_electronics": False,  # TẮT đồ free — chỉ săn điện thoại
+    "free_first": False,        # ưu tiên quét đồ free trước
     "scan_interval_minutes": 30,
     "headless": True,
     "skip_sold": True,
@@ -117,10 +117,10 @@ DEFAULT_CONFIG = {
     "skip_broken": True,
     "use_ai": True,
     "ai_model": groq_ai.DEFAULT_MODEL,
-    "ai_max_calls": 30,
+    "ai_max_calls": 40,
     "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
     "nationwide": True,               # quét toàn quốc (dùng danh sách vùng rộng)
-    "listing_max_age_hours": 24,       # chỉ lấy tin đăng trong N giờ gần đây
+    "listing_max_age_hours": 48,       # chỉ lấy tin đăng trong N giờ gần đây
     # Danh sách vùng dùng khi nationwide=True. CHỈ gồm các region id ĐÃ KIỂM CHỨNG
     # (trùng với "regions" mặc định). Không bịa id — daangn trả rỗng nếu id sai.
     "nationwide_regions": [

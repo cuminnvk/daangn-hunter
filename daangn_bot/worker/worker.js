@@ -1,97 +1,116 @@
 /**
  * Daangn Phone Hunter — Cloudflare Worker (menu Telegram 24/7).
  *
+ * Bot CHỈ săn ĐIỆN THOẠI dùng được trên daangn (tuyệt đối không quét thứ khác).
+ *
+ * Menu rút gọn:
+ *  - 💰 Đặt khoảng giá
+ *  - ⏱ Đặt thời gian quét
+ *  - 🔍 Quét ngay  /  ⏹ Dừng quét
+ *  - 📊 Trạng thái
+ *
  * Vai trò:
- *  - Nhận webhook Telegram, hiển thị MENU tương tác (đặt giá, thêm/bớt máy,
- *    bật/tắt đồ miễn phí, đổi tần suất, cài đặt lọc...).
- *  - Lưu cài đặt + danh sách người nhận vào KV (binding BOT_KV).
+ *  - Nhận webhook Telegram, hiển thị menu, lưu cài đặt vào KV (binding BOT_KV).
  *  - Nút "Quét ngay" gọi GitHub Actions (repository_dispatch) chạy Playwright.
- *  - Cung cấp GET /export?key=SECRET cho GitHub Actions lấy cài đặt.
+ *  - Worker cron tự bắn quét mỗi scan_interval_minutes (có gate chống dội).
+ *  - GET /export?key=SECRET cho GitHub Actions lấy cài đặt + người nhận.
  *
  * Biến môi trường (wrangler.toml [vars] / secret):
  *  BOT_TOKEN       (bắt buộc) token Telegram
  *  EXPORT_SECRET   (bắt buộc) chuỗi bí mật, khớp WORKER_SECRET bên Actions
  *  GH_TOKEN        (tùy chọn) PAT GitHub có quyền "repo" để bấm Quét ngay
  *  GH_REPO         (tùy chọn) "user/ten-repo"
- *  GROQ_API_KEY    (tùy chọn) để dịch tên máy Việt -> Hàn khi thêm máy
  * KV binding: BOT_KV
  */
 
-const DEFAULT_CONFIG = {
-  regions: [
-    { id: 6035, name: "역삼동" },
-    { id: 355, name: "신림동" },
-    { id: 6052, name: "마곡동" },
-    { id: 6543, name: "송도동" },
-    { id: 1766, name: "봉담읍" },
-    { id: 1604, name: "별내동" },
-    { id: 4245, name: "배곧동" },
-    { id: 2292, name: "불당동" },
-    { id: 3662, name: "물금읍" },
-    { id: 2899, name: "고흥읍" },
-  ],
-  watch: [
-    { keyword: "아이폰 15", min_price: 200000, max_price: 750000 },
-    { keyword: "아이폰 14", min_price: 150000, max_price: 550000 },
-    { keyword: "갤럭시 S24", min_price: 200000, max_price: 650000 },
-  ],
-  // Săn MỌI loại máy trong khoảng giá này (không cần thêm từng máy).
+// Cài đặt CHỈNH ĐƯỢC qua menu (chỉ 2 thứ).
+const USER_SETTINGS = {
   phone_min_price: 0,
-  phone_max_price: 60000,
+  phone_max_price: 600000,
+  scan_interval_minutes: 30,
+};
+
+// Cài đặt ÉP CỨNG — đảm bảo bot chỉ săn điện thoại dùng được, không gì khác.
+// Không hiển thị trên menu, không cho người dùng đổi.
+const FIXED_CONFIG = {
+  // Từ khóa quét — chỉ điện thoại.
   phone_keywords: ["아이폰", "갤럭시", "핸드폰", "휴대폰", "스마트폰"],
+  // TẮT hoàn toàn đồ miễn phí — tuyệt đối không quét.
+  free_electronics: false,
+  free_first: false,
+  free_limit: 0,
+  // Chỉ điện thoại thật, dùng được, không lỗi.
+  phones_only: true,
   strict_good: true,
   min_battery_percent: 70,
-  phones_only: true,
-  free_limit: 10,
-  phone_limit: 50,
-  send_delay_seconds: 2,
-  digest_mode: false,
-  send_scan_summary: true,
-  quiet_hours_enabled: false,
-  quiet_start_hour: 23,
-  quiet_end_hour: 7,
-  seen_ttl_hours: 48,
-  region_filter_enabled: false,
-  region_filter_terms: [],
-  groq_api_keys: [],
-  free_electronics: true,
-  free_first: true,
-  scan_interval_minutes: 30,
   skip_sold: true,
   skip_reserved: true,
   skip_broken: true,
+  // Mỗi lượt 40 tin, cách nhau 8 giây.
+  phone_limit: 40,
+  send_delay_seconds: 8,
+  digest_mode: false,
+  // Chỉ tin đăng trong 48h; tin đã gửi không lặp lại trong 48h.
+  listing_max_age_hours: 48,
+  seen_ttl_hours: 48,
+  // Quét toàn quốc.
+  nationwide: true,
+  nationwide_regions: [
+    { id: "6035", name: "역삼동" }, { id: "355", name: "신림동" },
+    { id: "6052", name: "마곡동" }, { id: "6543", name: "송도동" },
+    { id: "1766", name: "봉담읍" }, { id: "1604", name: "별내동" },
+    { id: "4245", name: "배곧동" }, { id: "4656", name: "옥정동" },
+    { id: "2134", name: "오창읍" }, { id: "2292", name: "불당동" },
+    { id: "2333", name: "배방읍" }, { id: "3662", name: "물금읍" },
+    { id: "2899", name: "고흥읍" },
+  ],
+  regions: [
+    { id: 6035, name: "역삼동" }, { id: 355, name: "신림동" },
+    { id: 6052, name: "마곡동" }, { id: 6543, name: "송도동" },
+    { id: 1766, name: "봉담읍" }, { id: 1604, name: "별내동" },
+    { id: 4245, name: "배곧동" }, { id: 2292, name: "불당동" },
+    { id: 3662, name: "물금읍" }, { id: 2899, name: "고흥읍" },
+  ],
+  // AI Groq thẩm định + dịch sang tiếng Việt.
   use_ai: true,
   ai_model: "llama-3.3-70b-versatile",
-  ai_max_calls: 30,
+  ai_max_calls: 40,
+  groq_api_keys: [],
   exclude_words: ["부품", "수리용", "잠금", "아이클라우드"],
-  listing_max_age_hours: 24,
+  // Không dùng nữa nhưng giữ để tương thích scan_once/bot.py.
+  quiet_hours_enabled: false,
+  quiet_start_hour: 23,
+  quiet_end_hour: 7,
+  region_filter_enabled: false,
+  region_filter_terms: [],
 };
 
-const PRESETS = [
-  ["iPhone 16", "아이폰 16"], ["iPhone 15", "아이폰 15"], ["iPhone 14", "아이폰 14"],
-  ["iPhone 13", "아이폰 13"], ["iPhone 12", "아이폰 12"], ["iPhone SE", "아이폰 SE"],
-  ["Galaxy S24", "갤럭시 S24"], ["Galaxy S23", "갤럭시 S23"], ["Galaxy Z Flip", "갤럭시 Z 플립"],
-  ["Galaxy Z Fold", "갤럭시 Z 폴드"], ["Galaxy Note", "갤럭시 노트"],
-  ["iPad", "아이패드"], ["Galaxy Tab", "갤럭시탭"], ["MacBook", "맥북"],
-  ["AirPods", "에어팟"], ["Apple Watch", "애플워치"],
-];
 const INTERVALS = [10, 15, 30, 60, 120];
 // Khoảng giá gợi ý nhanh (won): [từ, đến]
-const PRICE_PRESETS = [[0, 60000], [0, 150000], [0, 300000], [0, 500000], [100000, 700000]];
+const PRICE_PRESETS = [[0, 60000], [0, 150000], [0, 300000], [0, 500000], [0, 600000]];
 
 // --------------------------------------------------------------------------
-// KV helpers
+// KV helpers — chỉ lưu USER_SETTINGS; FIXED_CONFIG luôn ghép vào lúc đọc.
 // --------------------------------------------------------------------------
-async function getConfig(env) {
+async function getSettings(env) {
   const raw = await env.BOT_KV.get("config");
-  let cfg = raw ? JSON.parse(raw) : {};
-  for (const k of Object.keys(DEFAULT_CONFIG)) {
-    if (cfg[k] === undefined) cfg[k] = DEFAULT_CONFIG[k];
+  let s = raw ? JSON.parse(raw) : {};
+  const out = {};
+  for (const k of Object.keys(USER_SETTINGS)) {
+    out[k] = s[k] !== undefined ? s[k] : USER_SETTINGS[k];
   }
-  return cfg;
+  return out;
 }
-async function saveConfig(env, cfg) {
-  await env.BOT_KV.put("config", JSON.stringify(cfg));
+async function saveSettings(env, settings) {
+  // Chỉ ghi các khóa người dùng chỉnh được.
+  const clean = {};
+  for (const k of Object.keys(USER_SETTINGS)) clean[k] = settings[k];
+  await env.BOT_KV.put("config", JSON.stringify(clean));
+}
+// Config đầy đủ để xuất cho GitHub Actions = user settings + fixed.
+async function getFullConfig(env) {
+  const s = await getSettings(env);
+  return { ...FIXED_CONFIG, ...s };
 }
 async function getSubs(env) {
   const raw = await env.BOT_KV.get("subscribers");
@@ -160,7 +179,7 @@ function parsePrice(text) {
   return v <= 1000 ? Math.round(v) * 10000 : Math.round(v);
 }
 function won(v) {
-  const s = v.toLocaleString("en-US");
+  const s = (v || 0).toLocaleString("en-US");
   return v >= 10000 ? `${s}원 (${Math.floor(v / 10000)}만)` : `${s}원`;
 }
 function parseRange(text) {
@@ -177,137 +196,46 @@ const esc = (s) =>
 // --------------------------------------------------------------------------
 // MENU
 // --------------------------------------------------------------------------
-function mainMenu(cfg) {
-  const free = cfg.free_electronics ? "BẬT ✅" : "TẮT ⬜";
-  const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
+function mainMenu() {
   return kb([
     [btn("🔍 Quét ngay", "scan"), btn("⏹ Dừng quét", "stopscan")],
-    [btn(`💰 Giá máy: ${won(lo)} → ${won(hi)}`, "price")],
-    [btn(`🎁 Đồ điện tử miễn phí: ${free}`, "togglefree")],
-    [btn(`⏱ Tần suất: ${cfg.scan_interval_minutes} phút`, "interval")],
-    [btn("⚙️ Cài đặt lọc", "settings")],
+    [btn("💰 Đặt khoảng giá", "price")],
+    [btn("⏱ Đặt thời gian quét", "interval")],
     [btn("📊 Trạng thái", "status")],
   ]);
 }
-function mainText(cfg) {
-  const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
+function mainText(s) {
+  const lo = s.phone_min_price || 0, hi = s.phone_max_price || 0;
   return (
     "🥕 <b>Daangn Phone Hunter</b>\n\n" +
-    `📱 Săn MỌI máy giá: <b>${won(lo)} → ${won(hi)}</b>\n` +
-    `🎁 Ưu tiên đồ miễn phí: <b>${cfg.free_electronics ? "bật" : "tắt"}</b>\n` +
-    `🌍 Khu vực: <b>${cfg.regions.length}</b>\n` +
-    `⏱ Quét mỗi <b>${cfg.scan_interval_minutes}</b> phút\n\n` +
-    "Chỉ quét máy còn tốt (loại chập nguồn / ố màn / bể nát).\n" +
+    "📱 Bot chỉ săn <b>ĐIỆN THOẠI còn dùng được</b> (không lỗi).\n\n" +
+    `💰 Khoảng giá: <b>${won(lo)} → ${won(hi)}</b>\n` +
+    `⏱ Tự quét mỗi: <b>${s.scan_interval_minutes}</b> phút\n` +
+    "📦 Mỗi lượt tối đa <b>40</b> tin, cách nhau <b>8</b>s\n" +
+    "🕒 Chỉ tin đăng trong <b>48h</b>, không gửi lại tin cũ.\n\n" +
     "Chọn một mục bên dưới:"
   );
 }
-function priceMenu(cfg) {
+function priceMenu() {
   const rows = [[btn("✏️ Nhập khoảng giá (từ – đến)", "setrange")]];
   for (const [lo, hi] of PRICE_PRESETS) rows.push([btn(`${won(lo)} → ${won(hi)}`, `pr:${lo}:${hi}`)]);
   rows.push([btn("⬅️ Về menu chính", "home")]);
   return kb(rows);
 }
-function priceText(cfg) {
-  const lo = cfg.phone_min_price || 0, hi = cfg.phone_max_price || 0;
+function priceText(s) {
+  const lo = s.phone_min_price || 0, hi = s.phone_max_price || 0;
   return (
-    "💰 <b>Giá máy muốn săn</b>\n\n" +
+    "💰 <b>Khoảng giá điện thoại muốn săn</b>\n\n" +
     `Hiện tại: từ <b>${won(lo)}</b> đến <b>${won(hi)}</b>\n\n` +
-    "Bot chỉ dùng khoảng giá này để săn MỌI điện thoại. Danh sách máy riêng không còn được dùng.\n" +
     "Chọn nhanh hoặc bấm “Nhập khoảng giá”:"
   );
 }
-function watchMenu(cfg) {
-  const rows = cfg.watch.map((w, i) => {
-    const label = w.max_price ? `${w.keyword}  ≤ ${Math.floor(w.max_price / 10000)}만` : w.keyword;
-    return [btn(`📱 ${label}`, `w:${i}`)];
-  });
-  rows.push([btn("➕ Thêm máy", "addmenu")]);
-  rows.push([btn("⬅️ Về menu chính", "home")]);
-  return kb(rows);
-}
-function watchDetail(idx) {
-  return kb([
-    [btn("💵 Đặt giá tối đa", `setmax:${idx}`)],
-    [btn("💵 Đặt giá tối thiểu", `setmin:${idx}`)],
-    [btn("🗑 Xóa máy này", `del:${idx}`)],
-    [btn("⬅️ Quay lại", "watch")],
-  ]);
-}
-function addMenu() {
-  const rows = [];
-  let row = [];
-  PRESETS.forEach(([label], i) => {
-    row.push(btn(label, `add:${i}`));
-    if (row.length === 2) { rows.push(row); row = []; }
-  });
-  if (row.length) rows.push(row);
-  rows.push([btn("⌨️ Gõ tên khác (Hàn/Việt)", "addcustom")]);
-  rows.push([btn("⬅️ Quay lại", "watch")]);
-  return kb(rows);
-}
-function intervalMenu(cfg) {
+function intervalMenu(s) {
   const rows = INTERVALS.map((m) => [
-    btn((m === cfg.scan_interval_minutes ? "● " : "") + `${m} phút`, `int:${m}`),
+    btn((m === s.scan_interval_minutes ? "● " : "") + `${m} phút`, `int:${m}`),
   ]);
   rows.push([btn("⬅️ Về menu chính", "home")]);
   return kb(rows);
-}
-function settingsMenu(cfg) {
-  const m = (v) => (v ? "✅" : "⬜");
-  const fl = cfg.free_limit ?? 20, pl = cfg.phone_limit ?? 20;
-  const sd = cfg.send_delay_seconds ?? 10;
-  const mb = cfg.min_battery_percent ?? 80;
-  const qs = cfg.quiet_start_hour ?? 23;
-  const qe = cfg.quiet_end_hour ?? 7;
-  const ttl = cfg.seen_ttl_hours ?? 48;
-  const rt = (cfg.region_filter_terms || []).slice(0, 2).join(", ") || "chưa đặt";
-  const kn = (cfg.groq_api_keys || []).length;
-  return kb([
-    [btn(`${m(cfg.phones_only !== false)} Chỉ điện thoại (loại vỏ/ốp)`, "t:phones_only")],
-    [btn(`${m(cfg.strict_good !== false)} Chỉ máy còn tốt (nghiêm ngặt)`, "t:strict_good")],
-    [btn(`${m(cfg.skip_broken)} Bỏ máy hỏng/lỗi`, "t:skip_broken")],
-    [btn(`${m(cfg.skip_sold)} Bỏ tin đã bán`, "t:skip_sold")],
-    [btn(`${m(cfg.skip_reserved)} Bỏ tin đang giữ chỗ`, "t:skip_reserved")],
-    [btn(`${m(cfg.use_ai)} AI dịch & phân tích (Groq)`, "t:use_ai")],
-    [btn(`🔑 API key AI: ${kn} key`, "setkeys")],
-    [btn(`${m(cfg.digest_mode)} Chế độ gửi gộp (digest)`, "t:digest_mode")],
-    [btn(`${m(cfg.quiet_hours_enabled)} Giờ yên lặng (${qs}:00-${qe}:00)`, "t:quiet_hours_enabled")],
-    [btn("🌙 Đặt giờ yên lặng", "setquiet")],
-    [btn(`${m(cfg.region_filter_enabled)} Lọc theo vùng`, "t:region_filter_enabled")],
-    [btn(`📍 Vùng ưu tiên: ${rt}`, "setregion")],
-    [btn(`🕒 Không lặp tin: ${ttl}h`, "setttl")],
-    [btn(`🔋 Pin tối thiểu: ${mb}%`, "setbattery")],
-    [btn(`🔢 Giới hạn: ${fl} free / ${pl} máy / lượt`, "setlimit")],
-    [btn(`⏳ Giãn gửi: ${sd}s / tin`, "setdelay")],
-    [btn("⬅️ Về menu chính", "home")],
-  ]);
-}
-
-// --------------------------------------------------------------------------
-// Dịch tên máy Việt -> từ khóa Hàn (Groq, tùy chọn)
-// --------------------------------------------------------------------------
-async function viToKorean(env, text) {
-  const hasKorean = /[\uac00-\ud7a3]/.test(text);
-  if (hasKorean || !env.GROQ_API_KEY) return text;
-  try {
-    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [
-          { role: "system", content: "Trả về DUY NHẤT từ khóa tìm kiếm tiếng Hàn cho tên thiết bị, không giải thích." },
-          { role: "user", content: `Tên thiết bị: ${text}` },
-        ],
-        temperature: 0, max_tokens: 30,
-      }),
-    });
-    if (r.ok) {
-      const d = await r.json();
-      return (d.choices[0].message.content || text).trim().replace(/^"|"$/g, "");
-    }
-  } catch (_) {}
-  return text;
 }
 
 // --------------------------------------------------------------------------
@@ -333,8 +261,8 @@ async function triggerAutoScanIfDue(env) {
   // Worker cron chạy mỗi 5 phút nhưng chỉ ĐƯỢC bắn quét khi đã quá
   // scan_interval_minutes kể từ lần bắn trước — nếu không sẽ dội dispatch
   // liên tục khiến mọi run GitHub Actions bị hủy giữa chừng.
-  const cfg = await getConfig(env);
-  const intervalMs = Math.max(5, cfg.scan_interval_minutes || 30) * 60 * 1000;
+  const s = await getSettings(env);
+  const intervalMs = Math.max(5, s.scan_interval_minutes || 30) * 60 * 1000;
   const lastRaw = await env.BOT_KV.get("auto_last_dispatch");
   const last = lastRaw ? parseInt(lastRaw, 10) : 0;
   if (last > 0 && now - last < intervalMs) {
@@ -367,7 +295,6 @@ async function cancelScans(env) {
     if (!r.ok) return false;
     const data = await r.json();
     const runs = (data.workflow_runs || []);
-    // Hủy cả lượt đang queued.
     const r2 = await fetch(
       `https://api.github.com/repos/${env.GH_REPO}/actions/runs?status=queued&per_page=20`,
       { headers });
@@ -396,64 +323,41 @@ async function handleCallback(env, cb) {
   const chatId = cb.message.chat.id;
   const msgId = cb.message.message_id;
   await addSub(env, chatId);
-  const cfg = await getConfig(env);
+  const s = await getSettings(env);
 
-  if (data === "home") { await answer(env, cb.id); return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg)); }
-  if (data === "price" || data === "watch") { await answer(env, cb.id); return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg)); }
+  if (data === "home") {
+    await answer(env, cb.id);
+    return edit(env, chatId, msgId, mainText(s), mainMenu());
+  }
+
+  if (data === "price") {
+    await answer(env, cb.id);
+    return edit(env, chatId, msgId, priceText(s), priceMenu());
+  }
   if (data === "setrange") {
     await setPending(env, chatId, { action: "setrange" });
     await answer(env, cb.id);
-    return send(env, chatId, "✏️ Gửi khoảng giá <b>TẪ ĐẺN</b> (won), ví dụ:\n<b>20000 60000</b>  hoặc  <b>2만 6만</b>");
+    return send(env, chatId, "✏️ Gửi khoảng giá <b>TỪ ĐẾN</b> (won), ví dụ:\n<b>0 600000</b>  hoặc  <b>0 60만</b>");
   }
   if (data.startsWith("pr:")) {
     const [, lo, hi] = data.split(":");
-    cfg.phone_min_price = parseInt(lo, 10);
-    cfg.phone_max_price = parseInt(hi, 10);
-    await saveConfig(env, cfg);
+    s.phone_min_price = parseInt(lo, 10);
+    s.phone_max_price = parseInt(hi, 10);
+    await saveSettings(env, s);
     await answer(env, cb.id, "Đã đặt khoảng giá");
-    return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
+    return edit(env, chatId, msgId, priceText(s), priceMenu());
   }
-  if (data === "addmenu") {
-    await answer(env, cb.id, "Bot đang săn mọi máy theo khoảng giá");
-    return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
-  }
-  if (data === "settings") { await answer(env, cb.id); return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg)); }
-  if (data === "setlimit") {
-    await setPending(env, chatId, { action: "setlimit" });
+
+  if (data === "interval") {
     await answer(env, cb.id);
-    return send(env, chatId, "🔢 Gửi giới hạn <b>FREE MÁY</b> mỗi lượt (2 số), ví dụ:\n<b>20 20</b>  (20 đồ free + 20 điện thoại)");
+    return edit(env, chatId, msgId, "⏱ <b>Thời gian tự quét</b>\nChọn khoảng thời gian:", intervalMenu(s));
   }
-  if (data === "setdelay") {
-    await setPending(env, chatId, { action: "setdelay" });
-    await answer(env, cb.id);
-    return send(env, chatId, "⏳ Gửi số giây giãn cách mỗi tin, ví dụ: <b>10</b>");
+  if (data.startsWith("int:")) {
+    s.scan_interval_minutes = parseInt(data.split(":")[1], 10);
+    await saveSettings(env, s);
+    await answer(env, cb.id, "Đã đổi");
+    return edit(env, chatId, msgId, mainText(s), mainMenu());
   }
-  if (data === "setbattery") {
-    await setPending(env, chatId, { action: "setbattery" });
-    await answer(env, cb.id);
-    return send(env, chatId, "🔋 Gửi ngưỡng pin tối thiểu (%), ví dụ: <b>80</b>");
-  }
-  if (data === "setquiet") {
-    await setPending(env, chatId, { action: "setquiet" });
-    await answer(env, cb.id);
-    return send(env, chatId, "🌙 Gửi giờ yên lặng <b>BẮT ĐẦU KẾT THÚC</b> (0-23), ví dụ: <b>23 7</b>");
-  }
-  if (data === "setregion") {
-    await setPending(env, chatId, { action: "setregion" });
-    await answer(env, cb.id);
-    return send(env, chatId, "📍 Gửi danh sách vùng ưu tiên, cách nhau dấu phẩy. Ví dụ: <b>역삼동, 송도동</b>");
-  }
-  if (data === "setttl") {
-    await setPending(env, chatId, { action: "setttl" });
-    await answer(env, cb.id);
-    return send(env, chatId, "🕒 Gửi số giờ không lặp tin, ví dụ: <b>48</b>");
-  }
-  if (data === "setkeys") {
-    await setPending(env, chatId, { action: "setkeys" });
-    await answer(env, cb.id);
-    return send(env, chatId, "🔑 Gửi danh sách API key Groq, <b>mỗi key 1 dòng</b>. Bot sẽ tự đổi key khi bị limit.");
-  }
-  if (data === "interval") { await answer(env, cb.id); return edit(env, chatId, msgId, "⏱ <b>Tần suất quét</b>\nChọn khoảng thời gian:", intervalMenu(cfg)); }
 
   if (data === "status") {
     await answer(env, cb.id);
@@ -461,23 +365,15 @@ async function handleCallback(env, cb) {
     const lastStatsRaw = await env.BOT_KV.get("last_scan_stats");
     const lastStats = lastStatsRaw ? JSON.parse(lastStatsRaw) : null;
     const statLine = lastStats
-      ? `Tin mới lần trước: ${lastStats.found || 0} (free ${lastStats.free || 0}, máy ${lastStats.phone || 0})\n`
+      ? `Tin mới lần trước: <b>${lastStats.found || lastStats.phone || 0}</b> điện thoại\n`
       : "";
     const txt =
       "📊 <b>Trạng thái</b>\n\n" +
       `Lần quét gần nhất: ${last}\n` +
       statLine +
-      `AI: ${cfg.use_ai ? "bật" : "tắt"}\n` +
-      `Đồ miễn phí: ${cfg.free_electronics ? "bật" : "tắt"}\n` +
-      `Tần suất: ${cfg.scan_interval_minutes} phút`;
+      `💰 Khoảng giá: ${won(s.phone_min_price || 0)} → ${won(s.phone_max_price || 0)}\n` +
+      `⏱ Tự quét mỗi: ${s.scan_interval_minutes} phút`;
     return edit(env, chatId, msgId, txt, kb([[btn("⬅️ Về menu chính", "home")]]));
-  }
-
-  if (data === "togglefree") {
-    cfg.free_electronics = !cfg.free_electronics;
-    await saveConfig(env, cfg);
-    await answer(env, cb.id, "Đã cập nhật");
-    return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg));
   }
 
   if (data === "scan") {
@@ -499,31 +395,6 @@ async function handleCallback(env, cb) {
     return edit(env, chatId, msgId, note, kb([[btn("⬅️ Về menu chính", "home")]]));
   }
 
-  if (data.startsWith("int:")) {
-    cfg.scan_interval_minutes = parseInt(data.split(":")[1], 10);
-    await saveConfig(env, cfg);
-    await answer(env, cb.id, "Đã đổi");
-    return edit(env, chatId, msgId, mainText(cfg), mainMenu(cfg));
-  }
-
-  if (data.startsWith("t:")) {
-    const f = data.split(":")[1];
-    cfg[f] = !cfg[f];
-    await saveConfig(env, cfg);
-    await answer(env, cb.id, "Đã đổi");
-    return edit(env, chatId, msgId, "⚙️ <b>Cài đặt lọc</b>\n\nBấm để bật/tắt:", settingsMenu(cfg));
-  }
-
-  if (
-    data === "addmenu" || data === "addcustom" ||
-    data.startsWith("w:") || data.startsWith("del:") ||
-    data.startsWith("setmax:") || data.startsWith("setmin:") ||
-    data.startsWith("add:")
-  ) {
-    await answer(env, cb.id, "Bot đang săn mọi máy theo khoảng giá");
-    return edit(env, chatId, msgId, priceText(cfg), priceMenu(cfg));
-  }
-
   await answer(env, cb.id);
 }
 
@@ -537,8 +408,8 @@ async function handleMessage(env, msg) {
 
   if (text === "/start" || text === "/menu") {
     await clearPending(env, chatId);
-    const cfg = await getConfig(env);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+    const s = await getSettings(env);
+    return send(env, chatId, mainText(s), mainMenu());
   }
   if (text === "/scan") {
     const ok = await triggerScan(env, { manual: true, source: "telegram_command" });
@@ -548,97 +419,25 @@ async function handleMessage(env, msg) {
 
   const state = await getPending(env, chatId);
   if (!state) {
-    const cfg = await getConfig(env);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
+    const s = await getSettings(env);
+    return send(env, chatId, mainText(s), mainMenu());
   }
 
-  const cfg = await getConfig(env);
+  const s = await getSettings(env);
   if (state.action === "setrange") {
     const rng = parseRange(text);
-    if (!rng) return send(env, chatId, "⚠️ Chưa hiểu. Gửi 2 số TẪ ĐẺN, ví dụ: <b>20000 60000</b>");
-    cfg.phone_min_price = rng[0];
-    cfg.phone_max_price = rng[1];
-    await saveConfig(env, cfg);
+    if (!rng) return send(env, chatId, "⚠️ Chưa hiểu. Gửi 2 số TỪ ĐẾN, ví dụ: <b>0 600000</b>");
+    s.phone_min_price = rng[0];
+    s.phone_max_price = rng[1];
+    await saveSettings(env, s);
     await clearPending(env, chatId);
     await send(env, chatId, `✅ Đã đặt khoảng giá: từ <b>${won(rng[0])}</b> đến <b>${won(rng[1])}</b>.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setlimit") {
-    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-    if (nums.length < 2) return send(env, chatId, "⚠️ Gửi 2 số: FREE rồi MÁY, ví dụ <b>20 20</b>");
-    cfg.free_limit = Math.max(0, nums[0]);
-    cfg.phone_limit = Math.max(0, nums[1]);
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    await send(env, chatId, `✅ Mỗi lượt quét tối đa: <b>${nums[0]}</b> đồ free + <b>${nums[1]}</b> điện thoại.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setdelay") {
-    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-    if (nums.length < 1) return send(env, chatId, "⚠️ Gửi số giây hợp lệ, ví dụ <b>10</b>");
-    cfg.send_delay_seconds = Math.max(0, Math.min(30, nums[0]));
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    await send(env, chatId, `✅ Đã đặt giãn gửi: <b>${cfg.send_delay_seconds}</b> giây/tin.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setbattery") {
-    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-    if (nums.length < 1) return send(env, chatId, "⚠️ Gửi % pin hợp lệ, ví dụ <b>80</b>");
-    cfg.min_battery_percent = Math.max(50, Math.min(100, nums[0]));
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    await send(env, chatId, `✅ Đã đặt pin tối thiểu: <b>${cfg.min_battery_percent}%</b>.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setquiet") {
-    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-    if (nums.length < 2) return send(env, chatId, "⚠️ Gửi 2 số giờ (0-23), ví dụ <b>23 7</b>");
-    cfg.quiet_start_hour = Math.max(0, Math.min(23, nums[0]));
-    cfg.quiet_end_hour = Math.max(0, Math.min(23, nums[1]));
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    await send(env, chatId, `✅ Đã đặt giờ yên lặng: <b>${cfg.quiet_start_hour}:00 → ${cfg.quiet_end_hour}:00</b>.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setregion") {
-    cfg.region_filter_terms = text.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 10);
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    if (cfg.region_filter_terms.length) {
-      await send(env, chatId, `✅ Đã đặt vùng ưu tiên: <b>${esc(cfg.region_filter_terms.slice(0, 5).join(", "))}</b>`);
-    } else {
-      await send(env, chatId, "✅ Đã xóa danh sách vùng ưu tiên.");
-    }
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setttl") {
-    const nums = (text.match(/\d+/g) || []).map((n) => parseInt(n, 10));
-    if (nums.length < 1) return send(env, chatId, "⚠️ Gửi số giờ hợp lệ, ví dụ <b>48</b>");
-    cfg.seen_ttl_hours = Math.max(1, Math.min(168, nums[0]));
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    await send(env, chatId, `✅ Đã đặt không lặp tin trong <b>${cfg.seen_ttl_hours}</b> giờ.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setkeys") {
-    cfg.groq_api_keys = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
-    await saveConfig(env, cfg);
-    await clearPending(env, chatId);
-    await send(env, chatId, `✅ Đã lưu <b>${cfg.groq_api_keys.length}</b> API key AI.`);
-    return send(env, chatId, mainText(cfg), mainMenu(cfg));
-  }
-  if (state.action === "setmax" || state.action === "setmin") {
-    await clearPending(env, chatId);
-    await send(env, chatId, "⚠️ Bot hiện săn mọi máy theo <b>khoảng giá chung</b>, không đặt giá từng model nữa.");
-    return send(env, chatId, priceText(cfg), priceMenu(cfg));
+    return send(env, chatId, mainText(s), mainMenu());
   }
 
-  if (state.action === "addkw") {
-    await clearPending(env, chatId);
-    await send(env, chatId, "⚠️ Bot hiện săn mọi điện thoại theo <b>khoảng giá chung</b>, không thêm từng model nữa.");
-    return send(env, chatId, priceText(cfg), priceMenu(cfg));
-  }
+  // Hành động lạ -> về menu chính.
+  await clearPending(env, chatId);
+  return send(env, chatId, mainText(s), mainMenu());
 }
 
 // --------------------------------------------------------------------------
@@ -657,7 +456,7 @@ export default {
       if (url.searchParams.get("key") !== env.EXPORT_SECRET) {
         return new Response("forbidden", { status: 403 });
       }
-      const [config, subscribers] = await Promise.all([getConfig(env), getSubs(env)]);
+      const [config, subscribers] = await Promise.all([getFullConfig(env), getSubs(env)]);
       return Response.json({ config, subscribers });
     }
 

@@ -212,28 +212,29 @@ def main() -> int:
                     print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                     continue
                 items = sorted(items, key=lambda it: bot.bot_deal_rank(it))
+                skip_seen = skip_region = skip_fresh = skip_acc = skip_match = skip_ai = 0
                 for it in items:
                     if phone_limit and phone_count >= phone_limit:
                         return
                     if it["id"] in processed:
-                        continue
+                        skip_seen += 1; continue
                     if bot.seen_recent(seen, it["id"], seen_ttl):
-                        continue
+                        skip_seen += 1; continue
                     if not bot.pass_region_filter(it, cfg):
-                        continue
+                        skip_region += 1; continue
                     if not scraper.is_fresh(it, max_age_hours):
-                        continue
+                        skip_fresh += 1; continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
                         if scraper.clearly_not_phone(it["title"], it["content"]):
-                            continue
+                            skip_acc += 1; continue
                         if scraper.is_accessory(it["title"], it["content"]):
-                            continue
+                            skip_acc += 1; continue
                         if not scraper.looks_like_phone(it["title"], it["content"]):
-                            continue
+                            skip_acc += 1; continue
                     cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
                     if not bot.match_phone(it, grange, cfg, cond):
-                        continue
+                        skip_match += 1; continue
                     processed.add(it["id"])
                     vi = None
                     if ai_on and ai_budget > 0:
@@ -241,12 +242,13 @@ def main() -> int:
                         if vi:
                             ai_budget -= 1
                         if cfg.get("phones_only", True) and vi and vi.get("bo_qua"):
-                            continue
+                            skip_ai += 1; continue
                     msg = bot.build_message(it, cond, kw, False, vi)
                     found += 1
                     phone_count += 1
                     dispatch_item(msg)
                     bot.mark_seen(seen, it["id"])
+                print(f"  [{kw}] seen={skip_seen} fresh={skip_fresh} acc={skip_acc} match={skip_match} ai={skip_ai} → gửi={(phone_count)}")
 
         if nationwide:
             # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn

@@ -26,7 +26,6 @@ import requests
 from playwright.sync_api import sync_playwright
 
 import scraper
-import bunjang
 import groq_ai
 import bot  # tái dùng send(), match_phone(), match_free(), build_message()...
 
@@ -96,22 +95,6 @@ def resolve_subscribers() -> list[int]:
     return [int(chat)] if chat.isdigit() else []
 
 
-def build_bunjang_message(item: dict, cond: dict) -> str:
-    import html
-
-    esc = html.escape
-    lines = [
-        f"📱 <b>{esc(item['title'])}</b>",
-        "🛒 Nguồn: <b>번개장터</b>",
-    ]
-    if item.get("price") is not None:
-        lines.append(f"💰 {item['price']:,}원")
-    lines.append(f"🩺 Tình trạng: {cond['label']}")
-    lines.append("💬 Liên hệ: nhắn qua app 번개장터 (Bunjang)")
-    lines.append(f"🔗 {item['link']}")
-    return "\n".join(lines)
-
-
 def main() -> int:
     if not bot.TOKEN:
         print("Thiếu TELEGRAM_BOT_TOKEN.", file=sys.stderr)
@@ -147,28 +130,23 @@ def main() -> int:
     found = 0
     free_count = 0
     phone_count = 0
-    bunjang_count = 0
     free_limit = int(cfg.get("free_limit", 20) or 0)
     phone_limit = int(cfg.get("phone_limit", 20) or 0)
     seen_ttl = int(cfg.get("seen_ttl_hours", 168) or 168)
     send_delay = float(cfg.get("send_delay_seconds", 3) or 0)
-    digest_mode = bool(cfg.get("digest_mode", False)) and not FORCE_SCAN
+    digest_mode = bool(cfg.get("digest_mode", False))
     nationwide = bool(cfg.get("nationwide", True))
     max_age_hours = int(cfg.get("listing_max_age_hours", 168) or 168)
     max_scrolls = int(cfg.get("scan_max_scrolls", 8) or 8)
     broad_price_scan = bool(cfg.get("broad_price_scan", True))
-    bunjang_enabled = bool(cfg.get("bunjang_enabled", True))
-    bunjang_limit = int(cfg.get("bunjang_limit", 60) or 0)
     gmin = int(cfg.get("phone_min_price", 0) or 0)
     gmax = int(cfg.get("phone_max_price", 0) or 0)
     grange = {"min_price": gmin, "max_price": gmax}
     kws = cfg.get("phone_keywords") or ["아이폰", "갤럭시", "휴대폰", "스마트폰"]
-    bj_kws = cfg.get("bunjang_keywords") or kws
     processed: set[str] = set()
     digests: dict[int, list[str]] = {t: [] for t in targets}
 
     print(f"[Config] nationwide={nationwide}, max_age={max_age_hours}h, price={gmin}-{gmax}, kws={kws}")
-    print(f"[Config] bunjang={bunjang_enabled}, bj_limit={bunjang_limit}, bj_kws={bj_kws}")
     print(f"[Config] ai_on={ai_on}, budget={ai_budget}, targets={targets}")
 
     def dispatch_item(msg: str) -> None:
@@ -180,61 +158,6 @@ def main() -> int:
             bot.send(t, msg)
         if send_delay > 0:
             time.sleep(send_delay)
-
-    def scan_bunjang() -> None:
-        nonlocal found, phone_count, bunjang_count
-        if not bunjang_enabled or not bunjang_limit:
-            return
-        sent_before = bunjang_count
-        skip_seen = skip_age = skip_acc = skip_match = 0
-        for kw in bj_kws:
-            if bunjang_count >= bunjang_limit:
-                break
-            if phone_limit and phone_count >= phone_limit:
-                break
-            try:
-                items = bunjang.search_keyword(kw, gmin, gmax, limit=60)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  [Lỗi Bunjang] {kw}: {exc}", file=sys.stderr)
-                continue
-            for it in items:
-                if bunjang_count >= bunjang_limit:
-                    break
-                if phone_limit and phone_count >= phone_limit:
-                    break
-                if it["id"] in processed:
-                    skip_seen += 1; continue
-                if bot.seen_recent(seen, it["id"], seen_ttl):
-                    skip_seen += 1; continue
-                if not scraper.is_fresh(it, max_age_hours):
-                    skip_age += 1; continue
-                if bunjang.is_noise(it["title"]):
-                    skip_acc += 1; continue
-                if cfg.get("phones_only", True):
-                    if scraper.clearly_not_phone(it["title"], it["content"]):
-                        skip_acc += 1; continue
-                    if scraper.is_accessory(it["title"], it["content"]):
-                        skip_acc += 1; continue
-                    if not scraper.looks_like_phone(it["title"], it["content"]):
-                        skip_acc += 1; continue
-                cond = scraper.analyze_condition(it["title"] + "\n" + it["content"])
-                if not bot.match_phone(it, grange, cfg, cond):
-                    skip_match += 1; continue
-                processed.add(it["id"])
-                msg = build_bunjang_message(it, cond)
-                found += 1
-                phone_count += 1
-                bunjang_count += 1
-                dispatch_item(msg)
-                bot.mark_seen(seen, it["id"])
-        print(
-            f"  [Bunjang] seen={skip_seen} age={skip_age} acc={skip_acc} "
-            f"match={skip_match} → gửi thêm={bunjang_count - sent_before}, tổng={bunjang_count}"
-        )
-
-    # Bunjang is request-based and fast. Run it before Playwright so manual scans
-    # can start sending Telegram results within seconds when matching listings exist.
-    scan_bunjang()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -377,7 +300,7 @@ def main() -> int:
         for t, items in digests.items():
             if not items:
                 continue
-            bot.send(t, f"📦 Bản tin gộp: <b>{len(items)}</b> tin mới (free {free_count}, máy {phone_count}, Bunjang {bunjang_count}).")
+            bot.send(t, f"📦 Bản tin gộp: <b>{len(items)}</b> tin mới (free {free_count}, máy {phone_count}).")
             chunk_size = 5
             for i in range(0, len(items), chunk_size):
                 bot.send(t, "\n\n━━━━━━━━━━\n\n".join(items[i:i + chunk_size]))
@@ -391,12 +314,12 @@ def main() -> int:
                 "Không có điện thoại mới phù hợp để gửi.\n"
                 f"💰 Khoảng giá: <b>{bot.won(gmin)} → {bot.won(gmax)}</b>\n"
                 f"🕒 Tin trong <b>{max_age_hours}h</b> gần đây\n"
-                "Bot đã lọc Daangn + Bunjang, bỏ tin cũ, tin đã gửi, phụ kiện/sạc/ốp và máy hỏng."
+                "Bot đã lọc bỏ tin cũ, tin đã gửi, phụ kiện/sạc/ốp và máy hỏng."
             )
         else:
             summary = (
                 "✅ <b>Quét xong</b>\n\n"
-                f"Tin mới đã gửi: <b>{found}</b> (free {free_count}, máy {phone_count}, Bunjang {bunjang_count})."
+                f"Tin mới đã gửi: <b>{found}</b> (free {free_count}, máy {phone_count})."
             )
         for t in targets:
             bot.send(t, summary)
@@ -404,7 +327,7 @@ def main() -> int:
 
     bot.save_seen(seen)
     save_last_run_ts(time.time())
-    print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count}, Bunjang {bunjang_count})")
+    print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")
     return 0
 
 

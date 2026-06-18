@@ -46,13 +46,15 @@ const FIXED_CONFIG = {
   skip_sold: true,
   skip_reserved: true,
   skip_broken: true,
-  // Mỗi lượt 40 tin, cách nhau 3 giây.
-  phone_limit: 40,
+  // Mỗi lượt nhiều tin hơn để không bỏ sót khi lọc giá thấp/toàn quốc.
+  phone_limit: 120,
   send_delay_seconds: 3,
   digest_mode: true,
-  // Chỉ tin đăng trong 48h; tin đã gửi không lặp lại trong 48h.
-  listing_max_age_hours: 168,
-  seen_ttl_hours: 168,
+  // Chỉ tin đăng/được đẩy lên trong 48h; tin đã gửi không lặp lại trong 48h.
+  listing_max_age_hours: 48,
+  seen_ttl_hours: 48,
+  broad_price_scan: true,
+  scan_max_scrolls: 8,
   // Quét toàn quốc.
   nationwide: true,
   nationwide_regions: [
@@ -211,7 +213,7 @@ function mainText(s) {
     "📱 Bot chỉ săn <b>ĐIỆN THOẠI còn dùng được</b> (không lỗi).\n\n" +
     `💰 Khoảng giá: <b>${won(lo)} → ${won(hi)}</b>\n` +
     `⏱ Tự quét mỗi: <b>${s.scan_interval_minutes}</b> phút\n` +
-    "📦 Mỗi lượt tối đa <b>40</b> tin, cách nhau <b>8</b>s\n" +
+    "📦 Mỗi lượt tối đa <b>120</b> tin, cách nhau <b>3</b>s\n" +
     "🕒 Chỉ tin đăng trong <b>48h</b>, không gửi lại tin cũ.\n\n" +
     "Chọn một mục bên dưới:"
   );

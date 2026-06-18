@@ -98,13 +98,13 @@ DEFAULT_CONFIG = {
     "min_battery_percent": 70,  # pin tối thiểu nếu bật strict_good
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
     "free_limit": 0,            # TẮT đồ free — chỉ săn điện thoại
-    "phone_limit": 40,          # số tin điện thoại tối đa mỗi lượt quét
+    "phone_limit": 120,         # số tin điện thoại tối đa mỗi lượt quét
     "send_delay_seconds": 3,    # giãn cách gửi từng tin để tránh lỗi
     "digest_mode": True,        # gộp 5 tin thành 1 bản tin Telegram
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
     "quiet_end_hour": 7,
-    "seen_ttl_hours": 168,      # tin đã gửi không hiện lại trong 168h
+    "seen_ttl_hours": 48,       # tin đã gửi không hiện lại trong 48h
     "region_filter_enabled": False,
     "region_filter_terms": [],  # ví dụ ["역삼", "송도"]
     "groq_api_keys": [],        # nhiều key Groq nhập từ Telegram, mỗi key 1 dòng
@@ -120,7 +120,9 @@ DEFAULT_CONFIG = {
     "ai_max_calls": 40,
     "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
     "nationwide": True,               # quét toàn quốc (dùng danh sách vùng rộng)
-    "listing_max_age_hours": 168,       # chỉ lấy tin đăng trong N giờ gần đây
+    "listing_max_age_hours": 48,        # chỉ lấy tin đăng/đẩy lên trong N giờ gần đây
+    "broad_price_scan": True,           # quét thêm theo khoảng giá, không cần từ khóa
+    "scan_max_scrolls": 8,
     # Danh sách vùng dùng khi nationwide=True. CHỈ gồm các region id ĐÃ KIỂM CHỨNG
     # (trùng với "regions" mặc định). Không bịa id — daangn trả rỗng nếu id sai.
     "nationwide_regions": [
@@ -1018,6 +1020,8 @@ def run_scan(manual_chat: int | None = None):
         stopped = False
         nationwide = bool(cfg.get("nationwide", True))
         max_age_hours = int(cfg.get("listing_max_age_hours", 168) or 168)
+        max_scrolls = int(cfg.get("scan_max_scrolls", 8) or 8)
+        broad_price_scan = bool(cfg.get("broad_price_scan", True))
         processed: set[str] = set()
         digests: dict[int, list[str]] = {t: [] for t in targets}
 
@@ -1052,7 +1056,7 @@ def run_scan(manual_chat: int | None = None):
                 if free_limit and free_count >= free_limit:
                     return
                 try:
-                    free_items = scraper.scrape_free(page, rid, rname)
+                    free_items = scraper.scrape_free(page, rid, rname, max_scrolls=max_scrolls)
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
                     return
@@ -1088,15 +1092,8 @@ def run_scan(manual_chat: int | None = None):
 
             def scan_phones_region(rid, rname):
                 nonlocal found, ai_budget, phone_count, stopped
-                for kw in kws:
-                    if phone_limit and phone_count >= phone_limit:
-                        return
-                    try:
-                        items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
-                        continue
-                    # Ưu tiên gửi deal hời trước.
+                def handle_phone_items(items: list[dict], kw: str) -> bool:
+                    nonlocal found, ai_budget, phone_count, stopped
                     items = sorted(
                         items,
                         key=lambda it: bot_deal_rank(it),
@@ -1104,20 +1101,24 @@ def run_scan(manual_chat: int | None = None):
                     for it in items:
                         if cancel_scan.is_set():
                             stopped = True
-                            return
+                            return False
                         if phone_limit and phone_count >= phone_limit:
-                            return
+                            return False
                         if it["id"] in processed:
                             continue
                         if seen_recent(seen, it["id"], seen_ttl):
                             continue
                         if not pass_region_filter(it, cfg):
                             continue
+                        if not scraper.is_fresh(it, max_age_hours):
+                            continue
                         # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                         if cfg.get("phones_only", True):
                             if scraper.clearly_not_phone(it["title"], it["content"]):
                                 continue
                             if scraper.is_accessory(it["title"], it["content"]):
+                                continue
+                            if kw == "khoảng giá" and not scraper.looks_like_phone(it["title"], ""):
                                 continue
                             if not scraper.looks_like_phone(it["title"], it["content"]):
                                 continue
@@ -1139,6 +1140,29 @@ def run_scan(manual_chat: int | None = None):
                         dispatch_item(msg)
                         if not quiet_now:
                             mark_seen(seen, it["id"])
+                    return True
+
+                if broad_price_scan:
+                    if phone_limit and phone_count >= phone_limit:
+                        return
+                    try:
+                        items = scraper.scrape_price_range(page, rid, rname, gmin, gmax, max_scrolls=max_scrolls)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Lỗi] quét rộng @ {rname}: {exc}", file=sys.stderr)
+                    else:
+                        if not handle_phone_items(items, "khoảng giá"):
+                            return
+
+                for kw in kws:
+                    if phone_limit and phone_count >= phone_limit:
+                        return
+                    try:
+                        items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax, max_scrolls=max_scrolls)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
+                        continue
+                    if not handle_phone_items(items, kw):
+                        return
 
             if nationwide:
                 # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn

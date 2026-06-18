@@ -53,7 +53,13 @@ ACCESSORY_WORDS = [
     "보조배터리", "배터리팩", "데코", "스티커", "악세사리", "악세서리",
     "부품용", "부속품", "공박스", "박스만", "이어팁", "정품박스",
     # Cáp / phụ kiện sạc
-    "케이블", "충전선", "c to c", "c-to-c", "5핀", "8핀", "충전기만",
+    "케이블", "충전선", "충전기", "무선충전", "무선 충전", "충전독", "충전거치대",
+    "c to c", "c-to-c", "5핀", "8핀", "충전기만",
+    # Thiết bị không phải điện thoại
+    "워치", "스마트워치", "버즈", "에어팟", "이어폰", "헤드폰", "헤드셋",
+    "태블릿", "갤럭시탭", "갤탭", "아이패드", "ipad", "패드", "카플레이",
+    "안드로이드오토", "픽셀블럭", "블럭",
+    "노트북", "맥북", "컴퓨터", "데스크탑", "pc", "윈도우",
     # Giả / trưng bày
     "목업", "모형폰", "더미", "테스트폰", "디스플레이폰",
     # Điều khiển từ xa / không phải thiết bị
@@ -256,7 +262,13 @@ def _parse_articles(articles: list, fallback_region: str) -> list[dict]:
         m = ITEM_ID_RE.search(raw_id)
         if not m:
             continue
-        ts_raw = a.get("publishedAt") or a.get("createdAt") or a.get("writtenAt") or ""
+        ts_candidates = [
+            _parse_ts(a.get("publishedAt")),
+            _parse_ts(a.get("createdAt")),
+            _parse_ts(a.get("writtenAt")),
+            _parse_ts(a.get("boostedAt")),
+        ]
+        ts_candidates = [ts for ts in ts_candidates if ts is not None]
         results.append(
             {
                 "id": m.group(1),
@@ -267,13 +279,14 @@ def _parse_articles(articles: list, fallback_region: str) -> list[dict]:
                 "region": region_label(a.get("region") or {}) or fallback_region,
                 "seller": ((a.get("user") or {}).get("nickname") or "").strip(),
                 "link": href if href.startswith("http") else f"https://www.daangn.com{href}",
-                "published_at": _parse_ts(ts_raw),
+                # Daangn often re-surfaces boosted listings in the app.
+                "published_at": max(ts_candidates) if ts_candidates else None,
             }
         )
     return results
 
 
-def _fetch(page, url: str, max_scrolls: int = 4) -> list[dict]:
+def _fetch(page, url: str, max_scrolls: int = 8) -> list[dict]:
     """Điều hướng và bắt JSON từ API fleamarket/search.
     Cuộn xuống để kích hoạt infinite-scroll (mỗi lần ~20 item thêm).
     """
@@ -294,12 +307,17 @@ def _fetch(page, url: str, max_scrolls: int = 4) -> list[dict]:
                 break
             page.wait_for_timeout(1000)
         # Cuộn để tải thêm kết quả (infinite-scroll)
+        stagnant = 0
         for _ in range(max_scrolls):
             prev = len(captured)
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(800)
             if len(captured) == prev:
-                break  # Không còn item mới nữa
+                stagnant += 1
+                if stagnant >= 2:
+                    break  # Không còn item mới nữa
+            else:
+                stagnant = 0
     finally:
         page.remove_listener("response", on_response)
 
@@ -319,8 +337,34 @@ def _fetch(page, url: str, max_scrolls: int = 4) -> list[dict]:
     return all_articles
 
 
+def _append_price(url: str, min_price: int | None, max_price: int | None) -> str:
+    if min_price is None and max_price is None:
+        return url
+    lo = int(min_price) if min_price else 0
+    hi = int(max_price) if max_price else 0
+    sep = "&" if "?" in url and not url.endswith("?") else ""
+    return f"{url}{sep}price={lo}__{hi}"
+
+
+def scrape_price_range(page, region_id: str | None, region_name: str | None,
+                       min_price: int | None = None, max_price: int | None = None,
+                       max_scrolls: int = 8) -> list[dict]:
+    """Lấy kết quả theo khoảng giá, không kèm từ khóa.
+
+    Lượt quét rộng này giống cách người dùng mở app rồi chỉ lọc giá, sau đó bot
+    mới lọc tiếp điện thoại/phụ kiện ở tầng ứng dụng.
+    """
+    if region_id and region_name:
+        url = f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
+    else:
+        url = SEARCH_PAGE + "?"
+    url = _append_price(url, min_price, max_price)
+    return _parse_articles(_fetch(page, url, max_scrolls=max_scrolls), region_name or "전국")
+
+
 def scrape_keyword(page, region_id: str | None, region_name: str | None, keyword: str,
-                   min_price: int | None = None, max_price: int | None = None) -> list[dict]:
+                   min_price: int | None = None, max_price: int | None = None,
+                   max_scrolls: int = 8) -> list[dict]:
     if region_id and region_name:
         url = (
             f"{SEARCH_PAGE}?in={quote(region_name + '-' + region_id)}"
@@ -328,14 +372,11 @@ def scrape_keyword(page, region_id: str | None, region_name: str | None, keyword
         )
     else:
         url = f"{SEARCH_PAGE}?search={quote(keyword)}"
-    if min_price is not None or max_price is not None:
-        lo = int(min_price) if min_price else 0
-        hi = int(max_price) if max_price else 0
-        url += f"&price={lo}__{hi}"
-    return _parse_articles(_fetch(page, url), region_name or "전국")
+    url = _append_price(url, min_price, max_price)
+    return _parse_articles(_fetch(page, url, max_scrolls=max_scrolls), region_name or "전국")
 
 
-def scrape_free(page, region_id: str | None, region_name: str | None) -> list[dict]:
+def scrape_free(page, region_id: str | None, region_name: str | None, max_scrolls: int = 8) -> list[dict]:
     """Lấy đồ MIỄN PHÍ (price=0__0) rồi lọc đồ điện tử."""
     if region_id and region_name:
         url = (
@@ -344,5 +385,5 @@ def scrape_free(page, region_id: str | None, region_name: str | None) -> list[di
         )
     else:
         url = f"{SEARCH_PAGE}?price=0__0"
-    items = _parse_articles(_fetch(page, url), region_name or "전국")
+    items = _parse_articles(_fetch(page, url, max_scrolls=max_scrolls), region_name or "전국")
     return [it for it in items if is_electronics(it["title"], it["content"])]

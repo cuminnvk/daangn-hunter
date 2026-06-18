@@ -137,6 +137,8 @@ def main() -> int:
     digest_mode = bool(cfg.get("digest_mode", False))
     nationwide = bool(cfg.get("nationwide", True))
     max_age_hours = int(cfg.get("listing_max_age_hours", 168) or 168)
+    max_scrolls = int(cfg.get("scan_max_scrolls", 8) or 8)
+    broad_price_scan = bool(cfg.get("broad_price_scan", True))
     gmin = int(cfg.get("phone_min_price", 0) or 0)
     gmax = int(cfg.get("phone_max_price", 0) or 0)
     grange = {"min_price": gmin, "max_price": gmax}
@@ -171,7 +173,7 @@ def main() -> int:
             if free_limit and free_count >= free_limit:
                 return
             try:
-                free_items = scraper.scrape_free(page, rid, rname)
+                free_items = scraper.scrape_free(page, rid, rname, max_scrolls=max_scrolls)
             except Exception as exc:  # noqa: BLE001
                 print(f"  [Lỗi free] @ {rname}: {exc}", file=sys.stderr)
                 return
@@ -203,30 +205,29 @@ def main() -> int:
 
         def scan_phones_region(rid, rname):
             nonlocal found, ai_budget, phone_count
-            for kw in kws:
-                if phone_limit and phone_count >= phone_limit:
-                    return
-                try:
-                    items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
-                    continue
+            def handle_phone_items(items: list[dict], kw: str) -> bool:
+                nonlocal found, ai_budget, phone_count
                 items = sorted(items, key=lambda it: bot.bot_deal_rank(it))
-                skip_seen = skip_acc = skip_match = skip_ai = 0
+                skip_seen = skip_age = skip_acc = skip_match = skip_ai = 0
+                sent_before = phone_count
                 for it in items:
                     if phone_limit and phone_count >= phone_limit:
-                        return
+                        return False
                     if it["id"] in processed:
                         skip_seen += 1; continue
                     if bot.seen_recent(seen, it["id"], seen_ttl):
                         skip_seen += 1; continue
                     if not bot.pass_region_filter(it, cfg):
                         skip_acc += 1; continue
+                    if not scraper.is_fresh(it, max_age_hours):
+                        skip_age += 1; continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
                         if scraper.clearly_not_phone(it["title"], it["content"]):
                             skip_acc += 1; continue
                         if scraper.is_accessory(it["title"], it["content"]):
+                            skip_acc += 1; continue
+                        if kw == "khoảng giá" and not scraper.looks_like_phone(it["title"], ""):
                             skip_acc += 1; continue
                         if not scraper.looks_like_phone(it["title"], it["content"]):
                             skip_acc += 1; continue
@@ -246,7 +247,31 @@ def main() -> int:
                     phone_count += 1
                     dispatch_item(msg)
                     bot.mark_seen(seen, it["id"])
-                print(f"  [{kw}] seen={skip_seen} acc={skip_acc} match={skip_match} ai={skip_ai} → gửi={phone_count}")
+                sent_now = phone_count - sent_before
+                print(f"  [{kw}] seen={skip_seen} age={skip_age} acc={skip_acc} match={skip_match} ai={skip_ai} → gửi thêm={sent_now}, tổng={phone_count}")
+                return True
+
+            if broad_price_scan:
+                if phone_limit and phone_count >= phone_limit:
+                    return
+                try:
+                    items = scraper.scrape_price_range(page, rid, rname, gmin, gmax, max_scrolls=max_scrolls)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [Lỗi] quét rộng @ {rname}: {exc}", file=sys.stderr)
+                else:
+                    if not handle_phone_items(items, "khoảng giá"):
+                        return
+
+            for kw in kws:
+                if phone_limit and phone_count >= phone_limit:
+                    return
+                try:
+                    items = scraper.scrape_keyword(page, rid, rname, kw, gmin, gmax, max_scrolls=max_scrolls)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
+                    continue
+                if not handle_phone_items(items, kw):
+                    return
 
         if nationwide:
             # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn

@@ -49,7 +49,7 @@ const FIXED_CONFIG = {
   // Mỗi lượt 40 tin, cách nhau 3 giây.
   phone_limit: 40,
   send_delay_seconds: 3,
-  digest_mode: false,
+  digest_mode: true,
   // Chỉ tin đăng trong 48h; tin đã gửi không lặp lại trong 48h.
   listing_max_age_hours: 48,
   seen_ttl_hours: 48,

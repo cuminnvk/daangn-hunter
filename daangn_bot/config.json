@@ -24,6 +24,7 @@
   "min_battery_percent": 70,
   "phones_only": true,
   "phone_limit": 40,
+  "digest_mode": true,
   "send_delay_seconds": 3,
   "listing_max_age_hours": 48,
   "seen_ttl_hours": 48,

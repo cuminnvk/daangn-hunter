@@ -100,7 +100,7 @@ DEFAULT_CONFIG = {
     "free_limit": 0,            # TẮT đồ free — chỉ săn điện thoại
     "phone_limit": 40,          # số tin điện thoại tối đa mỗi lượt quét
     "send_delay_seconds": 3,    # giãn cách gửi từng tin để tránh lỗi
-    "digest_mode": False,       # gộp nhiều tin thành vài bản tin lớn
+    "digest_mode": True,        # gộp 5 tin thành 1 bản tin Telegram
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
     "quiet_end_hour": 7,

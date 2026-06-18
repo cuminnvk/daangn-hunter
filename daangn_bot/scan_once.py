@@ -212,7 +212,7 @@ def main() -> int:
                     print(f"  [Lỗi] {kw} @ {rname}: {exc}", file=sys.stderr)
                     continue
                 items = sorted(items, key=lambda it: bot.bot_deal_rank(it))
-                skip_seen = skip_region = skip_fresh = skip_acc = skip_match = skip_ai = 0
+                skip_seen = skip_acc = skip_match = skip_ai = 0
                 for it in items:
                     if phone_limit and phone_count >= phone_limit:
                         return
@@ -221,7 +221,7 @@ def main() -> int:
                     if bot.seen_recent(seen, it["id"], seen_ttl):
                         skip_seen += 1; continue
                     if not bot.pass_region_filter(it, cfg):
-                        skip_region += 1; continue
+                        skip_acc += 1; continue
                     # Loại vỏ/ốp/phụ kiện và tin không phải điện thoại.
                     if cfg.get("phones_only", True):
                         if scraper.clearly_not_phone(it["title"], it["content"]):
@@ -246,7 +246,7 @@ def main() -> int:
                     phone_count += 1
                     dispatch_item(msg)
                     bot.mark_seen(seen, it["id"])
-                print(f"  [{kw}] seen={skip_seen} fresh={skip_fresh} acc={skip_acc} match={skip_match} ai={skip_ai} → gửi={(phone_count)}")
+                print(f"  [{kw}] seen={skip_seen} acc={skip_acc} match={skip_match} ai={skip_ai} → gửi={phone_count}")
 
         if nationwide:
             # Tìm toàn quốc 1 lần (không lọc vùng) → nhanh + nhiều kết quả hơn

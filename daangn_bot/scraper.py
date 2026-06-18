@@ -250,13 +250,11 @@ def region_label(region: dict) -> str:
 
 def _parse_articles(articles: list, fallback_region: str) -> list[dict]:
     results = []
-    for i, a in enumerate(articles or []):
+    for a in articles or []:
         href = a.get("href") or ""
         raw_id = a.get("id") or href
         m = ITEM_ID_RE.search(raw_id)
         if not m:
-            if i == 0:
-                print(f"  [debug] sample article keys={list(a.keys())}, id={repr(a.get('id'))}, href={repr(href)[:80]}")
             continue
         ts_raw = a.get("publishedAt") or a.get("createdAt") or a.get("writtenAt") or ""
         results.append(

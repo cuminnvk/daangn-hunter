@@ -46,9 +46,9 @@ const FIXED_CONFIG = {
   skip_sold: true,
   skip_reserved: true,
   skip_broken: true,
-  // Mỗi lượt 40 tin, cách nhau 8 giây.
+  // Mỗi lượt 40 tin, cách nhau 3 giây.
   phone_limit: 40,
-  send_delay_seconds: 8,
+  send_delay_seconds: 3,
   digest_mode: false,
   // Chỉ tin đăng trong 48h; tin đã gửi không lặp lại trong 48h.
   listing_max_age_hours: 48,

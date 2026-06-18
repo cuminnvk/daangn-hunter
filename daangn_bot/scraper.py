@@ -292,7 +292,7 @@ def _fetch(page, url: str, max_scrolls: int = 4) -> list[dict]:
         for _ in range(max_scrolls):
             prev = len(captured)
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(2500)
+            page.wait_for_timeout(1000)
             if len(captured) == prev:
                 break  # Không còn item mới nữa
     finally:

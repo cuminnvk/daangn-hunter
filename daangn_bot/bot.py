@@ -99,7 +99,7 @@ DEFAULT_CONFIG = {
     "phones_only": True,        # chỉ điện thoại thật, loại vỏ/ốp/phụ kiện
     "free_limit": 0,            # TẮT đồ free — chỉ săn điện thoại
     "phone_limit": 40,          # số tin điện thoại tối đa mỗi lượt quét
-    "send_delay_seconds": 8,    # giãn cách gửi từng tin để tránh lỗi
+    "send_delay_seconds": 3,    # giãn cách gửi từng tin để tránh lỗi
     "digest_mode": False,       # gộp nhiều tin thành vài bản tin lớn
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
@@ -540,7 +540,7 @@ def settings_markup(cfg: dict) -> dict:
         return "✅" if v else "⬜"
     fl = cfg.get("free_limit", 20)
     pl = cfg.get("phone_limit", 20)
-    sd = int(cfg.get("send_delay_seconds", 10) or 0)
+    sd = int(cfg.get("send_delay_seconds", 3) or 0)
     mb = int(cfg.get("min_battery_percent", 80) or 0)
     q_on = cfg.get("quiet_hours_enabled", False)
     q_st = int(cfg.get("quiet_start_hour", 23) or 23)
@@ -1012,7 +1012,7 @@ def run_scan(manual_chat: int | None = None):
         free_limit = int(cfg.get("free_limit", 20) or 0)
         phone_limit = int(cfg.get("phone_limit", 20) or 0)
         seen_ttl = int(cfg.get("seen_ttl_hours", 48) or 48)
-        send_delay = float(cfg.get("send_delay_seconds", 10) or 0)
+        send_delay = float(cfg.get("send_delay_seconds", 3) or 0)
         digest_mode = bool(cfg.get("digest_mode", False))
         quiet_now = is_quiet_hours(cfg) and manual_chat is None
         stopped = False

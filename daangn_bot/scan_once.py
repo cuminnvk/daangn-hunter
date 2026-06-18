@@ -307,6 +307,24 @@ def main() -> int:
                 if send_delay > 0:
                     time.sleep(send_delay)
 
+    if FORCE_SCAN:
+        if found == 0:
+            summary = (
+                "✅ <b>Quét xong</b>\n\n"
+                "Không có điện thoại mới phù hợp để gửi.\n"
+                f"💰 Khoảng giá: <b>{bot.won(gmin)} → {bot.won(gmax)}</b>\n"
+                f"🕒 Tin trong <b>{max_age_hours}h</b> gần đây\n"
+                "Bot đã lọc bỏ tin cũ, tin đã gửi, phụ kiện/sạc/ốp và máy hỏng."
+            )
+        else:
+            summary = (
+                "✅ <b>Quét xong</b>\n\n"
+                f"Tin mới đã gửi: <b>{found}</b> (free {free_count}, máy {phone_count})."
+            )
+        for t in targets:
+            bot.send(t, summary)
+        print(f"[Notify] Đã gửi tổng kết quét thủ công tới {len(targets)} chat.")
+
     bot.save_seen(seen)
     save_last_run_ts(time.time())
     print(f"[Quét xong] Tin mới gửi đi: {found} (free {free_count}, máy {phone_count})")

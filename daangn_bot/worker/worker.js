@@ -51,8 +51,8 @@ const FIXED_CONFIG = {
   send_delay_seconds: 3,
   digest_mode: true,
   // Chỉ tin đăng trong 48h; tin đã gửi không lặp lại trong 48h.
-  listing_max_age_hours: 48,
-  seen_ttl_hours: 48,
+  listing_max_age_hours: 168,
+  seen_ttl_hours: 168,
   // Quét toàn quốc.
   nationwide: true,
   nationwide_regions: [

@@ -104,7 +104,7 @@ DEFAULT_CONFIG = {
     "quiet_hours_enabled": False,
     "quiet_start_hour": 23,
     "quiet_end_hour": 7,
-    "seen_ttl_hours": 48,       # tin đã gửi không hiện lại trong 48h
+    "seen_ttl_hours": 168,      # tin đã gửi không hiện lại trong 168h
     "region_filter_enabled": False,
     "region_filter_terms": [],  # ví dụ ["역삼", "송도"]
     "groq_api_keys": [],        # nhiều key Groq nhập từ Telegram, mỗi key 1 dòng
@@ -120,7 +120,7 @@ DEFAULT_CONFIG = {
     "ai_max_calls": 40,
     "exclude_words": ["부품", "수리용", "잠금", "아이클라우드"],
     "nationwide": True,               # quét toàn quốc (dùng danh sách vùng rộng)
-    "listing_max_age_hours": 48,       # chỉ lấy tin đăng trong N giờ gần đây
+    "listing_max_age_hours": 168,       # chỉ lấy tin đăng trong N giờ gần đây
     # Danh sách vùng dùng khi nationwide=True. CHỈ gồm các region id ĐÃ KIỂM CHỨNG
     # (trùng với "regions" mặc định). Không bịa id — daangn trả rỗng nếu id sai.
     "nationwide_regions": [
@@ -1011,13 +1011,13 @@ def run_scan(manual_chat: int | None = None):
         phone_count = 0
         free_limit = int(cfg.get("free_limit", 20) or 0)
         phone_limit = int(cfg.get("phone_limit", 20) or 0)
-        seen_ttl = int(cfg.get("seen_ttl_hours", 48) or 48)
+        seen_ttl = int(cfg.get("seen_ttl_hours", 168) or 168)
         send_delay = float(cfg.get("send_delay_seconds", 3) or 0)
         digest_mode = bool(cfg.get("digest_mode", False))
         quiet_now = is_quiet_hours(cfg) and manual_chat is None
         stopped = False
         nationwide = bool(cfg.get("nationwide", True))
-        max_age_hours = int(cfg.get("listing_max_age_hours", 24) or 24)
+        max_age_hours = int(cfg.get("listing_max_age_hours", 168) or 168)
         processed: set[str] = set()
         digests: dict[int, list[str]] = {t: [] for t in targets}
 

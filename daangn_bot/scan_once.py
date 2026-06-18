@@ -132,11 +132,11 @@ def main() -> int:
     phone_count = 0
     free_limit = int(cfg.get("free_limit", 20) or 0)
     phone_limit = int(cfg.get("phone_limit", 20) or 0)
-    seen_ttl = int(cfg.get("seen_ttl_hours", 48) or 48)
+    seen_ttl = int(cfg.get("seen_ttl_hours", 168) or 168)
     send_delay = float(cfg.get("send_delay_seconds", 3) or 0)
     digest_mode = bool(cfg.get("digest_mode", False))
     nationwide = bool(cfg.get("nationwide", True))
-    max_age_hours = int(cfg.get("listing_max_age_hours", 24) or 24)
+    max_age_hours = int(cfg.get("listing_max_age_hours", 168) or 168)
     gmin = int(cfg.get("phone_min_price", 0) or 0)
     gmax = int(cfg.get("phone_max_price", 0) or 0)
     grange = {"min_price": gmin, "max_price": gmax}

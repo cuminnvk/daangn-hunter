@@ -139,7 +139,7 @@ def is_electronics(title: str, content: str = "") -> bool:
 
 
 def _parse_ts(ts_str) -> float | None:
-    """Chuyển ISO 8601 hoặc unix timestamp thành float. Trả None nếu lỗi."""
+    """Chuyển ISO 8601 hoặc unix timestamp (giây hoặc ms) thành float. Trả None nếu lỗi."""
     if not ts_str:
         return None
     try:
@@ -148,7 +148,11 @@ def _parse_ts(ts_str) -> float | None:
     except (ValueError, TypeError):
         pass
     try:
-        return float(ts_str)
+        val = float(ts_str)
+        # Nếu > 1e10 → milliseconds (unix ms), chia 1000 về giây
+        if val > 1e10:
+            val = val / 1000.0
+        return val
     except (TypeError, ValueError):
         return None
 
